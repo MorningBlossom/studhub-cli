@@ -1,0 +1,18 @@
+# {{.ServiceName}}
+
+This is the {{.ServiceName}} microservice for the StudHub inter-college student networking platform.
+
+## Architecture Context
+This service operates behind the central API Gateway. If this service handles feeds, clubs, or events, it is designed to interface with the machine learning pipelines and vector databases via gRPC for automated moderation and real-time recommendations.
+
+## Local Development
+
+**⚠️ Hardware Constraints:** Ensure your local development stack respects the 8 to 12 GB RAM constraints when running this service alongside the API gateway and ML services.
+
+### Commands
+
+We use a `Makefile` to simplify local development. 
+
+**Run locally:**
+```bash
+make run
