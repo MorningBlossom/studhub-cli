@@ -1,0 +1,164 @@
+name: Release StudHub CLI
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  # JOB 1: Identify which tool to build based on PR labels
+  identify-tool:
+    if: github.event.pull_request.merged == true
+    name: Identify Tool from Labels
+    runs-on: ubuntu-latest
+    outputs:
+      # Pass the extracted tool name to the other jobs
+      tool_name: ${{ steps.get_tool.outputs.TOOL_NAME }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Determine Tool from Labels
+        id: get_tool
+        env:
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          FOUND_TOOL=""
+          # Loop through every label attached to the merged PR
+          for label in $LABELS; do
+            # If a folder matches the label name, we found our tool
+            if [ -d "./cmd/$label" ]; then
+              FOUND_TOOL=$label
+              break
+            fi
+          done
+
+          if [ -z "$FOUND_TOOL" ]; then
+            echo "No label matching a folder in cmd/ was found. Skipping release."
+            exit 1
+          fi
+
+          echo "Found tool from label: $FOUND_TOOL"
+          # Save it to GitHub Outputs so Jobs 2 & 3 can read it
+          echo "TOOL_NAME=$FOUND_TOOL" >> $GITHUB_OUTPUT
+
+  build-binaries:
+    needs: identify-tool
+    if: github.event.pull_request.merged == true
+    name: Build Binaries
+    runs-on: ubuntu-latest
+    env:
+      TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
+    strategy:
+      matrix:
+        goos: [linux, windows, darwin]
+        goarch: [amd64, arm64]
+        exclude:
+          - goos: windows
+            goarch: arm64
+    steps:
+      
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          if [ ! -d "./cmd/${TOOL_NAME}" ]; then exit 1; fi
+          mkdir -p dist
+          BINARY_NAME="$TOOL_NAME"
+          if [ "$GOOS" = "windows" ]; then BINARY_NAME="${BINARY_NAME}.exe"; fi
+          go build -o "dist/${BINARY_NAME}-${GOOS}-${GOARCH}" "./cmd/${TOOL_NAME}"
+
+      - name: Store Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+
+  # JOB 2: Release to Main Repo & Auto-generate the Homebrew file
+  publish-and-tap:
+    needs: [build-binaries, identify-tool]
+    runs-on: ubuntu-latest
+    env:
+      TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
+      VERSION: v1.0.${{ github.run_number }} 
+      ORG_NAME: MorningBlossom
+      
+    steps:
+      # FIX 1: Checkout the repo so the release action has git context
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist/
+          merge-multiple: true 
+
+      - name: Publish to GitHub Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Create and Push Homebrew Formula
+        run: |
+          # Calculate hashes
+          MAC_ARM=$(shasum -a 256 dist/${TOOL_NAME}-darwin-arm64 | awk '{print $1}')
+          MAC_INTEL=$(shasum -a 256 dist/${TOOL_NAME}-darwin-amd64 | awk '{print $1}')
+          LINUX_INTEL=$(shasum -a 256 dist/${TOOL_NAME}-linux-amd64 | awk '{print $1}')
+
+          # Convert branch name to Ruby Class (e.g. studhub-generate -> StudhubGenerate)
+          CLASS_NAME=$(echo "$TOOL_NAME" | awk -F- '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2))}1' OFS="")
+
+          # Clone the empty tap repository
+          git clone https://${{ secrets.GH_PAT }}@github.com/${ORG_NAME}/homebrew-studhub-cli.git tap-repo
+          cd tap-repo
+
+          mkdir -p Formula
+
+          # FIX: Align the class contents and EOF exactly with 'cat'
+          cat > Formula/${TOOL_NAME}.rb <<EOF
+          class ${CLASS_NAME} < Formula
+            desc "StudHub CLI tool: ${TOOL_NAME}"
+            homepage "https://github.com/${{ github.repository }}"
+            version "${VERSION}"
+
+            if OS.mac? && Hardware::CPU.arm?
+              url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-darwin-arm64"
+              sha256 "${MAC_ARM}"
+            elsif OS.mac? && Hardware::CPU.intel?
+              url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-darwin-amd64"
+              sha256 "${MAC_INTEL}"
+            elsif OS.linux? && Hardware::CPU.intel?
+              url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-linux-amd64"
+              sha256 "${LINUX_INTEL}"
+            end
+
+            def install
+              if OS.mac? && Hardware::CPU.arm?
+                bin.install "${TOOL_NAME}-darwin-arm64" => "${TOOL_NAME}"
+              elsif OS.mac? && Hardware::CPU.intel?
+                bin.install "${TOOL_NAME}-darwin-amd64" => "${TOOL_NAME}"
+              elsif OS.linux? && Hardware::CPU.intel?
+                bin.install "${TOOL_NAME}-linux-amd64" => "${TOOL_NAME}"
+              end
+            end
+          end
+          EOF
+
+          # COMMIT AND PUSH
+          git config user.name "GitHub Actions CI"
+          git config user.email "actions@github.com"
+          git add Formula/${TOOL_NAME}.rb
+          git commit -m "Auto-generate ${TOOL_NAME} formula for ${VERSION}"
+          git push origin main
