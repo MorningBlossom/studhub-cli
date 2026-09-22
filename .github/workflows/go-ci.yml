@@ -86,6 +86,8 @@ jobs:
   publish-and-tap:
     needs: [build-binaries, identify-tool]
     runs-on: ubuntu-latest
+    permissions:
+     contents: write
     env:
       TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
       VERSION: v1.0.${{ github.run_number }} 
