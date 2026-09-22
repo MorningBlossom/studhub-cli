@@ -164,3 +164,48 @@ jobs:
           git add Formula/${TOOL_NAME}.rb
           git commit -m "Auto-generate ${TOOL_NAME} formula for ${VERSION}"
           git push origin main
+      
+      - name: Cleanup
+        run: rm -rf tap-repo
+    
+      # NEW: Add Scoop support for Windows users
+      - name: Create and Push Scoop Manifest
+        run: |
+          # Calculate Windows hash
+          WINDOWS_INTEL=$(shasum -a 256 dist/${TOOL_NAME}-windows-amd64.exe | awk '{print $1}')
+          
+          # Scoop package versions standardly don't use the "v" prefix (e.g. 1.0.45 instead of v1.0.45)
+          SCOOP_VERSION="${VERSION#v}"
+
+          # Clone the empty scoop bucket repository
+          git clone https://${{ secrets.GH_PAT }}@github.com/${ORG_NAME}/scoop-studhub-cli.git scoop-repo
+          cd scoop-repo
+          
+          # Standard Scoop directories use a 'bucket' folder
+          mkdir -p bucket
+          
+          # Write the JSON manifest
+          cat > bucket/${TOOL_NAME}.json <<EOF
+          {
+            "version": "${SCOOP_VERSION}",
+            "architecture": {
+              "64bit": {
+                "url": "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-windows-amd64.exe#/${TOOL_NAME}.exe",
+                "hash": "${WINDOWS_INTEL}"
+              }
+            },
+            "bin": "${TOOL_NAME}.exe",
+            "description": "StudHub CLI tool: ${TOOL_NAME}",
+            "homepage": "https://github.com/${{ github.repository }}"
+          }
+          EOF
+
+          # Commit and Push
+          git config user.name "GitHub Actions CI"
+          git config user.email "actions@github.com"
+          git add bucket/${TOOL_NAME}.json
+          git commit -m "Auto-generate ${TOOL_NAME} manifest for ${VERSION}"
+          git push origin main
+          
+      - name: Cleanup
+        run: rm -rf scoop-repo
