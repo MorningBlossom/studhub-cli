@@ -17,27 +17,45 @@ permissions:
   contents: read
 
 jobs:
+  prepare-matrix:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Generate matrix combinations
+        id: gen
+        shell: bash
+        run: |
+          tools='${{ inputs.tools }}'
+          platforms='[
+            {"goos": "linux", "goarch": "amd64"},
+            {"goos": "linux", "goarch": "arm64"},
+            {"goos": "darwin", "goarch": "amd64"},
+            {"goos": "darwin", "goarch": "arm64"},
+            {"goos": "windows", "goarch": "amd64"}
+          ]'
+
+          matrix=$(echo "$tools" | jq -c --argjson platforms "$platforms" '
+            {
+              include: [
+                .[] as $tool |
+                $platforms[] |
+                . + {tool: $tool}
+              ]
+            }
+          ')
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
-
+    needs: prepare-matrix
     runs-on: ubuntu-latest
 
     strategy:
       fail-fast: false
-
-      matrix:
-        tool: ${{ fromJSON(inputs.tools) }}
-        include:
-          - goos: linux
-            goarch: amd64
-          - goos: linux
-            goarch: arm64
-          - goos: darwin
-            goarch: amd64
-          - goos: darwin
-            goarch: arm64
-          - goos: windows
-            goarch: amd64
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
 
     steps:
       - name: Checkout
