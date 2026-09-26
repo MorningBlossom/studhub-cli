@@ -12,4 +12,4 @@ jobs:
     uses: MorningBlossom/ci-cd/.github/workflows/jira-validation.yml@main
     secrets: inherit
     with:
-        jira-key: 'SP'
+        jira-key: 'SP,sp'

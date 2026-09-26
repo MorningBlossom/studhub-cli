@@ -4,12 +4,17 @@ on:
   workflow_call:
     inputs:
       tools:
-        description: "JSON array containing CLI tools"
+        description: "JSON array of CLI tools"
         required: true
         type: string
 
       version:
         description: "Release version"
+        required: true
+        type: string
+
+      tag:
+        description: "GitHub Release tag"
         required: true
         type: string
 
@@ -22,138 +27,99 @@ permissions:
 
 jobs:
   publish:
-    name: Publish Scoop manifests
+    name: Update Scoop manifests
     runs-on: ubuntu-latest
 
     steps:
-      - name: Setup Git
-        shell: bash
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Clone Scoop bucket
-        env:
-          TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf scoop-bucket
-
-          git clone \
-            "https://x-access-token:${TOKEN}@github.com/MorningBlossom/scoop-studhub-cli.git" \
-            scoop-bucket
-
-          mkdir -p scoop-bucket/bucket
+      - name: Checkout Scoop bucket
+        uses: actions/checkout@v4
+        with:
+          repository: MorningBlossom/scoop-studhub-cli
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          path: scoop-studhub-cli
 
       - name: Generate Scoop manifests
         env:
           VERSION: ${{ inputs.version }}
-          TOOLS_JSON: ${{ inputs.tools }}
+          TAG: ${{ inputs.tag }}
         shell: bash
+        working-directory: scoop-studhub-cli
         run: |
           set -euo pipefail
 
-          VERSION_NO_V="${VERSION#v}"
+          tools='${{ inputs.tools }}'
 
-          echo "Generating Scoop manifests for ${VERSION_NO_V}"
+          mkdir -p bucket
 
-          for TOOL in $(echo "${TOOLS_JSON}" | jq -r '.[]'); do
+          echo "$tools" |
+            jq -r '.[]' |
+            while read -r tool; do
 
-            echo ""
-            echo "======================================"
-            echo "Generating manifest: ${TOOL}"
-            echo "======================================"
+              binary="${tool}-windows-amd64.exe"
 
-            AMD_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-windows-amd64.zip"
+              url="https://github.com/MorningBlossom/studhub-cli/releases/download/${TAG}/${binary}"
 
-            echo "Downloading Windows release..."
+              echo "Downloading ${binary}"
 
-            curl \
-              -fsSL \
-              -o /tmp/${TOOL}.zip \
-              "${AMD_URL}"
+              curl \
+                --fail \
+                --location \
+                --retry 3 \
+                --output "/tmp/${binary}" \
+                "$url"
 
-            SHA256="$(
-              sha256sum "/tmp/${TOOL}.zip" |
-              awk '{print $1}'
-            )"
+              hash="$(
+                sha256sum "/tmp/${binary}" |
+                awk '{print $1}'
+              )"
 
-            MANIFEST="scoop-bucket/bucket/${TOOL}.json"
-
-            cat > "${MANIFEST}" <<EOF
-            {
-              "version": "${VERSION_NO_V}",
-              "description": "StudHub CLI - generate new StudHub microservices",
-              "homepage": "https://github.com/MorningBlossom/studhub-cli",
-              "license": "MIT",
-              "architecture": {
-                "64bit": {
-                  "url": "${AMD_URL}",
-                  "hash": "${SHA256}"
-                }
-              },
-              "bin": [
-                [
-                  "${TOOL}-windows-amd64.exe",
-                  "${TOOL}"
-                ]
-              ],
-              "checkver": {
-                "github": "https://github.com/MorningBlossom/studhub-cli"
-              },
-              "autoupdate": {
-                "architecture": {
-                  "64bit": {
-                    "url": "https://github.com/MorningBlossom/studhub-cli/releases/download/v\$version/${TOOL}-windows-amd64.zip"
-                  }
-                }
+              cat > "bucket/${tool}.json" <<EOF
+          {
+            "version": "${VERSION}",
+            "architecture": {
+              "64bit": {
+                "url": "${url}#/$(echo "$tool").exe",
+                "hash": "${hash}"
               }
-            }
-            EOF
+            },
+            "bin": "${tool}.exe",
+            "description": "StudHub CLI tool: ${tool}",
+            "homepage": "https://github.com/MorningBlossom/studhub-cli"
+          }
+          EOF
 
-            echo ""
-            echo "Generated manifest:"
-            cat "${MANIFEST}"
+            done
 
-          done
-
-      - name: Validate manifests
+      - name: Validate JSON manifests
         shell: bash
+        working-directory: scoop-studhub-cli
         run: |
           set -euo pipefail
 
-          if ! command -v jq >/dev/null 2>&1; then
-            echo "Installing jq..."
-            sudo apt-get update
-            sudo apt-get install -y jq
-          fi
-
-          for manifest in scoop-bucket/bucket/*.json; do
+          for manifest in bucket/*.json; do
             echo "Validating ${manifest}"
-
-            jq empty "${manifest}"
-
-            echo "Valid JSON: ${manifest}"
+            jq empty "$manifest"
           done
 
-      - name: Commit Scoop changes
+      - name: Commit and push manifests
         env:
           VERSION: ${{ inputs.version }}
-        working-directory: scoop-bucket
         shell: bash
+        working-directory: scoop-studhub-cli
         run: |
           set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add bucket/
 
           if git diff --cached --quiet; then
-            echo "No Scoop changes detected."
+            echo "No Scoop manifest changes."
             exit 0
           fi
 
           git commit \
-            -m "studhub-generate ${VERSION}"
+            -m "chore: release studhub-cli ${VERSION}"
 
-          git push origin HEAD
+          git push origin HEAD:main

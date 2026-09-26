@@ -4,12 +4,17 @@ on:
   workflow_call:
     inputs:
       tools:
-        description: "JSON array containing CLI tools"
+        description: "JSON array of CLI tools"
         required: true
         type: string
 
       version:
         description: "Release version"
+        required: true
+        type: string
+
+      tag:
+        description: "GitHub Release tag"
         required: true
         type: string
 
@@ -22,191 +27,142 @@ permissions:
 
 jobs:
   publish:
-    name: Publish Homebrew formulas
+    name: Update Homebrew formulas
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout source repository
+      - name: Checkout Homebrew tap
         uses: actions/checkout@v4
+        with:
+          repository: MorningBlossom/homebrew-studhub-cli
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          path: homebrew-studhub-cli
 
-      - name: Setup Git
-        shell: bash
-        run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-      - name: Clone Homebrew tap
-        env:
-          TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          rm -rf homebrew-tap
-
-          git clone \
-            "https://x-access-token:${TOKEN}@github.com/MorningBlossom/homebrew-studhub-cli.git" \
-            homebrew-tap
-
-          mkdir -p homebrew-tap/Formula
-
-      - name: Generate Homebrew formulas
+      - name: Download release binaries and generate formulas
         env:
           VERSION: ${{ inputs.version }}
-          TOOLS_JSON: ${{ inputs.tools }}
+          TAG: ${{ inputs.tag }}
         shell: bash
+        working-directory: homebrew-studhub-cli
         run: |
           set -euo pipefail
 
-          VERSION_NO_V="${VERSION#v}"
+          tools='${{ inputs.tools }}'
 
-          echo "Generating Homebrew formulas for ${VERSION_NO_V}"
+          mkdir -p Formula
 
-          for TOOL in $(echo "${TOOLS_JSON}" | jq -r '.[]'); do
+          echo "$tools" |
+            jq -r '.[]' |
+            while read -r tool; do
 
-            echo ""
-            echo "======================================"
-            echo "Generating formula: ${TOOL}"
-            echo "======================================"
+              echo "Processing ${tool}"
 
-            MAC_ARM_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-darwin-arm64.tar.gz"
-            MAC_AMD_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-darwin-amd64.tar.gz"
+              darwin_arm="${tool}-darwin-arm64"
+              darwin_amd="${tool}-darwin-amd64"
+              linux_arm="${tool}-linux-arm64"
+              linux_amd="${tool}-linux-amd64"
 
-            LINUX_ARM_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-linux-arm64.tar.gz"
-            LINUX_AMD_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-linux-amd64.tar.gz"
+              base_url="https://github.com/MorningBlossom/studhub-cli/releases/download/${TAG}"
 
-            echo "Downloading release assets..."
+              curl --fail --location --retry 3 \
+                -o "/tmp/${darwin_arm}" \
+                "${base_url}/${darwin_arm}"
 
-            curl \
-              -fsSL \
-              -o /tmp/mac-arm.tar.gz \
-              "${MAC_ARM_URL}"
+              curl --fail --location --retry 3 \
+                -o "/tmp/${darwin_amd}" \
+                "${base_url}/${darwin_amd}"
 
-            curl \
-              -fsSL \
-              -o /tmp/mac-amd.tar.gz \
-              "${MAC_AMD_URL}"
+              curl --fail --location --retry 3 \
+                -o "/tmp/${linux_arm}" \
+                "${base_url}/${linux_arm}"
 
-            curl \
-              -fsSL \
-              -o /tmp/linux-arm.tar.gz \
-              "${LINUX_ARM_URL}"
+              curl --fail --location --retry 3 \
+                -o "/tmp/${linux_amd}" \
+                "${base_url}/${linux_amd}"
 
-            curl \
-              -fsSL \
-              -o /tmp/linux-amd.tar.gz \
-              "${LINUX_AMD_URL}"
+              darwin_arm_sha="$(sha256sum "/tmp/${darwin_arm}" | awk '{print $1}')"
+              darwin_amd_sha="$(sha256sum "/tmp/${darwin_amd}" | awk '{print $1}')"
+              linux_arm_sha="$(sha256sum "/tmp/${linux_arm}" | awk '{print $1}')"
+              linux_amd_sha="$(sha256sum "/tmp/${linux_amd}" | awk '{print $1}')"
 
-            MAC_ARM_SHA="$(sha256sum /tmp/mac-arm.tar.gz | awk '{print $1}')"
-            MAC_AMD_SHA="$(sha256sum /tmp/mac-amd.tar.gz | awk '{print $1}')"
-
-            LINUX_ARM_SHA="$(sha256sum /tmp/linux-arm.tar.gz | awk '{print $1}')"
-            LINUX_AMD_SHA="$(sha256sum /tmp/linux-amd.tar.gz | awk '{print $1}')"
-
-            CLASS_NAME="$(
-              echo "${TOOL}" |
-              awk -F- '
-                {
-                  result=""
+              formula_class="$(
+                echo "$tool" |
+                awk -F- '{
                   for (i = 1; i <= NF; i++) {
-                    result = result toupper(substr($i,1,1)) substr($i,2)
+                    printf "%s", toupper(substr($i,1,1)) substr($i,2)
                   }
-                  print result
-                }
-              '
-            )"
+                }'
+              )"
 
-            FORMULA="homebrew-tap/Formula/${TOOL}.rb"
+              cat > "Formula/${tool}.rb" <<EOF
+          class ${formula_class} < Formula
+            desc "StudHub CLI tool: ${tool}"
+            homepage "https://github.com/MorningBlossom/studhub-cli"
+            version "${VERSION}"
 
-            cat > "${FORMULA}" <<EOF
-            class ${CLASS_NAME} < Formula
-              desc "StudHub CLI"
-              homepage "https://github.com/MorningBlossom/studhub-cli"
-              version "${VERSION_NO_V}"
+            if OS.mac? && Hardware::CPU.arm?
+              url "${base_url}/${darwin_arm}"
+              sha256 "${darwin_arm_sha}"
+            elsif OS.mac? && Hardware::CPU.intel?
+              url "${base_url}/${darwin_amd}"
+              sha256 "${darwin_amd_sha}"
+            elsif OS.linux? && Hardware::CPU.arm?
+              url "${base_url}/${linux_arm}"
+              sha256 "${linux_arm_sha}"
+            elsif OS.linux? && Hardware::CPU.intel?
+              url "${base_url}/${linux_amd}"
+              sha256 "${linux_amd_sha}"
+            end
 
-              on_macos do
-                on_arm do
-                  url "${MAC_ARM_URL}"
-                  sha256 "${MAC_ARM_SHA}"
-
-                  def install
-                    bin.install "${TOOL}-darwin-arm64" => "${TOOL}"
-                  end
-                end
-
-                on_intel do
-                  url "${MAC_AMD_URL}"
-                  sha256 "${MAC_AMD_SHA}"
-
-                  def install
-                    bin.install "${TOOL}-darwin-amd64" => "${TOOL}"
-                  end
-                end
-              end
-
-              on_linux do
-                on_arm do
-                  url "${LINUX_ARM_URL}"
-                  sha256 "${LINUX_ARM_SHA}"
-
-                  def install
-                    bin.install "${TOOL}-linux-arm64" => "${TOOL}"
-                  end
-                end
-
-                on_intel do
-                  url "${LINUX_AMD_URL}"
-                  sha256 "${LINUX_AMD_SHA}"
-
-                  def install
-                    bin.install "${TOOL}-linux-amd64" => "${TOOL}"
-                  end
-                end
-              end
-
-              test do
-                assert_match version.to_s, shell_output("#{bin}/${TOOL} --version 2>&1", 0)
+            def install
+              if OS.mac? && Hardware::CPU.arm?
+                bin.install "${darwin_arm}" => "${tool}"
+              elsif OS.mac? && Hardware::CPU.intel?
+                bin.install "${darwin_amd}" => "${tool}"
+              elsif OS.linux? && Hardware::CPU.arm?
+                bin.install "${linux_arm}" => "${tool}"
+              elsif OS.linux? && Hardware::CPU.intel?
+                bin.install "${linux_amd}" => "${tool}"
               end
             end
-            EOF
 
-            echo ""
-            echo "Generated formula:"
-            cat "${FORMULA}"
+            test do
+              assert_predicate bin/"${tool}", :exist?
+            end
+          end
+          EOF
 
-          done
+            done
 
       - name: Validate formulas
         shell: bash
+        working-directory: homebrew-studhub-cli
         run: |
           set -euo pipefail
 
-          if [[ ! -d "homebrew-tap/Formula" ]]; then
-            echo "::error::Homebrew Formula directory does not exist."
-            exit 1
-          fi
+          for formula in Formula/*.rb; do
+            ruby -c "$formula"
+          done
 
-          find homebrew-tap/Formula \
-            -type f \
-            -name '*.rb' \
-            -print
-
-      - name: Commit Homebrew changes
+      - name: Commit and push formulas
         env:
           VERSION: ${{ inputs.version }}
-        working-directory: homebrew-tap
         shell: bash
+        working-directory: homebrew-studhub-cli
         run: |
           set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add Formula/
 
           if git diff --cached --quiet; then
-            echo "No Homebrew changes detected."
+            echo "No Homebrew formula changes."
             exit 0
           fi
 
           git commit \
-            -m "studhub-generate ${VERSION}"
+            -m "chore: release studhub-cli ${VERSION}"
 
-          git push origin HEAD
+          git push origin HEAD:main

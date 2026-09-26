@@ -4,12 +4,17 @@ on:
   workflow_call:
     inputs:
       tools:
-        description: "JSON array containing CLI tools"
+        description: "JSON array of CLI tools to build"
         required: true
         type: string
 
       version:
         description: "Release version"
+        required: true
+        type: string
+
+      ref:
+        description: "Exact Git SHA to build"
         required: true
         type: string
 
@@ -28,24 +33,27 @@ jobs:
       matrix:
         tool: ${{ fromJSON(inputs.tools) }}
 
-        goos:
-          - linux
-          - windows
-          - darwin
+        include:
+          - goos: linux
+            goarch: amd64
 
-        goarch:
-          - amd64
-          - arm64
-
-        exclude:
-          - goos: windows
+          - goos: linux
             goarch: arm64
 
+          - goos: darwin
+            goarch: amd64
+
+          - goos: darwin
+            goarch: arm64
+
+          - goos: windows
+            goarch: amd64
+
     steps:
-      - name: Checkout merged main
+      - name: Checkout exact release commit
         uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.ref }}
           fetch-depth: 1
 
       - name: Setup Go
@@ -57,133 +65,43 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Verify modules
+      - name: Verify dependencies
         run: go mod verify
-
-      - name: Validate CLI directory
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TOOL="${{ matrix.tool }}"
-
-          if [[ ! -d "./cmd/${TOOL}" ]]; then
-            echo "::error::Tool directory ./cmd/${TOOL} does not exist"
-            exit 1
-          fi
 
       - name: Build binary
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
         shell: bash
         run: |
           set -euo pipefail
-
-          TOOL="${{ matrix.tool }}"
-          VERSION="${{ inputs.version }}"
 
           mkdir -p dist
 
-          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
+          binary_name="${{ matrix.tool }}"
 
-          if [[ "${GOOS}" == "windows" ]]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
+          if [ "${GOOS}" = "windows" ]; then
+            binary_name="${binary_name}.exe"
           fi
 
-          OUTPUT="dist/${BINARY_NAME}"
-
-          echo "======================================"
-          echo "Building release binary"
-          echo "======================================"
-          echo "Tool:    ${TOOL}"
-          echo "Version: ${VERSION}"
-          echo "OS:      ${GOOS}"
-          echo "Arch:    ${GOARCH}"
-          echo "Output:  ${OUTPUT}"
-          echo "======================================"
+          echo "Building ${binary_name}"
 
           go build \
             -trimpath \
-            -o "${OUTPUT}" \
-            "./cmd/${TOOL}"
+            -ldflags="-s -w" \
+            -o "dist/${binary_name}" \
+            "./cmd/${{ matrix.tool }}"
 
-      - name: Verify binary
-        shell: bash
-        run: |
-          set -euo pipefail
+          test -f "dist/${binary_name}"
 
-          TOOL="${{ matrix.tool }}"
-          GOOS="${{ matrix.goos }}"
-          GOARCH="${{ matrix.goarch }}"
-
-          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
-
-          if [[ "${GOOS}" == "windows" ]]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
-          fi
-
-          test -f "dist/${BINARY_NAME}"
-          test -s "dist/${BINARY_NAME}"
-
-          ls -lh "dist/${BINARY_NAME}"
-
-      - name: Package release
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TOOL="${{ matrix.tool }}"
-          GOOS="${{ matrix.goos }}"
-          GOARCH="${{ matrix.goarch }}"
-
-          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
-
-          if [[ "${GOOS}" == "windows" ]]; then
-            BINARY_NAME="${BINARY_NAME}.exe"
-          fi
-
-          mkdir -p release
-
-          if [[ "${GOOS}" == "windows" ]]; then
-
-            ARCHIVE="release/${TOOL}-${GOOS}-${GOARCH}.zip"
-
-            cd dist
-
-            zip \
-              "../${ARCHIVE}" \
-              "${BINARY_NAME}"
-
-          else
-
-            ARCHIVE="release/${TOOL}-${GOOS}-${GOARCH}.tar.gz"
-
-            tar \
-              -C dist \
-              -czf "${ARCHIVE}" \
-              "${BINARY_NAME}"
-
-          fi
-
-          echo "Created:"
-          ls -lh "release/"
-
-      - name: Generate SHA256
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd release
-
-          sha256sum * > SHA256SUMS
-
-          cat SHA256SUMS
+          echo "Built:"
+          ls -lh "dist/${binary_name}"
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: release/*
+          name: bin-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 7
