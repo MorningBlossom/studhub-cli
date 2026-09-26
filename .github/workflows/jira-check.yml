@@ -1,0 +1,15 @@
+name: jira ticket validation
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+   contents: read
+   pull-requests: read
+
+jobs:
+  call-jira-label-pipeline:
+    uses: MorningBlossom/ci-cd/.github/workflows/jira-validation.yml@main
+    secrets: inherit
+    with:
+        jira-key: 'SP'

@@ -1,0 +1,120 @@
+name: Auto Label PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Detect and Apply Tool Labels
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # 1. Fetch changed files
+          CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
+          
+          # 2. Detect tools directly modified inside cmd/
+          CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 || true)
+
+          # 3. Detect tools indirectly affected by changes in pkg/
+          PKG_TOOLS=""
+          PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u || true)
+          
+          for pkg in $PKG_DIRS; do
+            if [ -n "$pkg" ]; then
+              if [ -d "./cmd/$pkg" ]; then
+                PKG_TOOLS="$PKG_TOOLS $pkg"
+              fi
+              if [ -d "./cmd" ]; then
+                AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2 || true)
+                for affected_tool in $AFFECTED; do
+                  if [ -n "$affected_tool" ]; then
+                    PKG_TOOLS="$PKG_TOOLS $affected_tool"
+                  fi
+                done
+              fi
+            fi
+          done
+
+          # 4. Consolidate ALL tools found in the diff
+          ALL_CHANGED_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+
+          # 5. Filter down to ACTIVE tools (folders that actually still exist on disk)
+          ACTIVE_TOOLS=""
+          for tool in $ALL_CHANGED_TOOLS; do
+            if [ -d "./cmd/$tool" ]; then
+              ACTIVE_TOOLS="$ACTIVE_TOOLS $tool"
+            fi
+          done
+          ACTIVE_TOOLS=$(echo "$ACTIVE_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+
+          # 6. RECONCILIATION: Clean up obsolete labels
+          CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
+          
+          # Fetch all labels in the repository that we created (using the description as a watermark)
+          MANAGED_LABELS=$(gh label list --limit 1000 | grep 'Auto-generated trigger' | awk -F'\t' '{print $1}' || true)
+
+          for label in $CURRENT_LABELS; do
+            if [ -n "$label" ]; then
+              IS_MANAGED=0
+              
+              # Check if the label is one of our auto-generated ones
+              for managed in $MANAGED_LABELS; do
+                if [ "$managed" == "$label" ]; then
+                  IS_MANAGED=1
+                  break
+                fi
+              done
+              
+              # Fallback: If it was actively touched in this diff, we manage it
+              for changed in $ALL_CHANGED_TOOLS; do
+                if [ "$changed" == "$label" ]; then
+                  IS_MANAGED=1
+                  break
+                fi
+              done
+
+              # If we own this label, verify it is still active
+              if [ $IS_MANAGED -eq 1 ]; then
+                IS_ACTIVE=0
+                for tool in $ACTIVE_TOOLS; do
+                  if [ "$tool" == "$label" ]; then
+                    IS_ACTIVE=1
+                    break
+                  fi
+                done
+                
+                # If it is NOT active (folder deleted or commit reverted), remove it
+                if [ $IS_ACTIVE -eq 0 ]; then
+                  echo "🧹 Removing obsolete tool label: $label"
+                  gh pr edit "$PR_NUMBER" --remove-label "$label" || true
+                fi
+              fi
+            fi
+          done
+
+          # 7. Exit early if no active tool changes remain
+          if [ -z "$ACTIVE_TOOLS" ]; then
+            echo "No active tool changes remain (tools were reverted or deleted). Pipeline complete."
+            exit 0
+          fi
+
+          echo "✅ Active tools to be labeled: $ACTIVE_TOOLS"
+
+          # 8. Apply labels for all currently active tools
+          for tool in $ACTIVE_TOOLS; do
+            # Create the label with our watermark description if it doesn't exist
+            gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force || true
+            gh pr edit "$PR_NUMBER" --add-label "$tool"
+            echo "✅ Successfully added label: $tool"
+          done
