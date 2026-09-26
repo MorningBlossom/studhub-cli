@@ -1,0 +1,41 @@
+name: Auto Label PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  auto-label:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Detect and Apply Tool Labels
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          # Get changed files from the active PR
+          CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
+          
+          # Extract folder name under cmd/
+          TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 | sort -u)
+
+          if [ -z "$TOOLS" ]; then
+            echo "No changes detected in cmd/. Skipping label generation."
+            exit 0
+          fi
+
+          for tool in $TOOLS; do
+            if [ -d "./cmd/$tool" ]; then
+              # Create the label if it doesn't exist, then attach it to the PR
+              gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force
+              gh pr edit "$PR_NUMBER" --add-label "$tool"
+              echo "Added label: $tool"
+            fi
+          done
