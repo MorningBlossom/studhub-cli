@@ -232,9 +232,8 @@ jobs:
       version: ${{ needs.detect-tools.outputs.version }}
       tag: ${{ needs.detect-tools.outputs.tag }}
 
-    secrets:
-      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
-
+    secrets: inherit
+  
   publish-scoop:
     name: Publish Scoop manifests
     needs:
@@ -250,5 +249,4 @@ jobs:
       version: ${{ needs.detect-tools.outputs.version }}
       tag: ${{ needs.detect-tools.outputs.tag }}
 
-    secrets:
-      PACKAGE_PUBLISH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+    secrets: inherit
