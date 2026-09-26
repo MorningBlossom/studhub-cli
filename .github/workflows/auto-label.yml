@@ -17,7 +17,7 @@ jobs:
 
       - name: Detect and Apply Tool Labels
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # Get all changed files from the active PR
@@ -34,15 +34,11 @@ jobs:
             if [ -n "$pkg" ]; then
               echo "Detected change in package: pkg/$pkg"
               
-              # Strategy A: Direct Name Match
-              # If a tool in cmd/ has the exact same name as the pkg/, flag it.
               if [ -d "./cmd/$pkg" ]; then
                 echo "  -> Matched by folder name: cmd/$pkg"
                 PKG_TOOLS="$PKG_TOOLS $pkg"
               fi
               
-              # Strategy B: Import Search
-              # Search inside cmd/ for any tool that imports this pkg/ folder string
               if [ -d "./cmd" ]; then
                 AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2 || true)
                 for affected_tool in $AFFECTED; do
@@ -55,15 +51,40 @@ jobs:
             fi
           done
 
-          # Combine both lists, remove duplicates, and remove empty lines
+          # Combine both lists and remove duplicates
           ALL_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
+          # 3. RECONCILIATION: Remove stale tool labels
+          # Fetch current labels on the PR
+          CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
+
+          for label in $CURRENT_LABELS; do
+            # If the label matches a tool folder in cmd/
+            if [ -n "$label" ] && [ -d "./cmd/$label" ]; then
+              # Check if this label exists in our newly calculated ALL_TOOLS
+              IS_VALID=0
+              for tool in $ALL_TOOLS; do
+                if [ "$tool" == "$label" ]; then
+                  IS_VALID=1
+                  break
+                fi
+              done
+              
+              # If it is no longer valid, remove it
+              if [ $IS_VALID -eq 0 ]; then
+                echo "🧹 Removing stale label: $label"
+                gh pr edit "$PR_NUMBER" --remove-label "$label" || true
+              fi
+            fi
+          done
+
+          # 4. Exit if no tools are currently affected
           if [ -z "$ALL_TOOLS" ]; then
-            echo "No relevant changes detected in cmd/ or pkg/ that affect a CLI tool. Skipping label generation."
+            echo "No relevant changes detected in cmd/ or pkg/ that affect a CLI tool. Skipping label addition."
             exit 0
           fi
 
-          # Count tools and enforce single-tool PRs (Monorepo Best Practice)
+          # 5. Enforce single-tool PRs
           TOOL_COUNT=$(echo "$ALL_TOOLS" | wc -w)
           if [ "$TOOL_COUNT" -gt 1 ]; then
             echo "❌ ERROR: Multiple tools affected by these changes."
@@ -73,11 +94,10 @@ jobs:
             exit 1
           fi
 
-          # Apply the label
+          # 6. Apply current labels
           for tool in $ALL_TOOLS; do
             if [ -n "$tool" ] && [ -d "./cmd/$tool" ]; then
-              # Create the label if it doesn't exist, then attach it to the PR
-              gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force
+              gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force || true
               gh pr edit "$PR_NUMBER" --add-label "$tool"
               echo "✅ Successfully added label: $tool"
             fi
