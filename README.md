@@ -279,7 +279,6 @@ make run
 The generated project also performs the standard Go module setup and formatting operations:
 
 ```bash
-go mod init
 go mod init github.com/MorningBlossom/<service-name>
 go get github.com/jackc/pgx/v5
 go mod tidy
