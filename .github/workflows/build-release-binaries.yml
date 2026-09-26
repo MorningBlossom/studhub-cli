@@ -30,9 +30,11 @@ jobs:
     steps:
       - name: Generate matrix combinations
         id: gen
+        env:
+          TOOLS_JSON: ${{ inputs.tools }}
         shell: bash
         run: |
-          tools='${{ inputs.tools }}'
+          tools="$TOOLS_JSON"
           platforms='[
             {"goos": "linux", "goarch": "amd64"},
             {"goos": "linux", "goarch": "arm64"},

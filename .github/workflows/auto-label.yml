@@ -158,13 +158,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
+          TOOLS_JSON: ${{ steps.detect.outputs.tools }}
         shell: bash
         run: |
           set -euo pipefail
 
-          tools='${{ steps.detect.outputs.tools }}'
-
-          echo "$tools" |
+          echo "$TOOLS_JSON" |
             jq -r '.[]' |
             while read -r tool; do
               gh label create "$tool" \
@@ -179,14 +178,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          TOOLS_JSON: ${{ steps.detect.outputs.tools }}
         shell: bash
         run: |
           set -euo pipefail
 
-          tools='${{ steps.detect.outputs.tools }}'
-
           mapfile -t AFFECTED_TOOLS < <(
-            echo "$tools" | jq -r '.[]'
+            echo "$TOOLS_JSON" | jq -r '.[]'
           )
 
           mapfile -t CURRENT_MANAGED_LABELS < <(
@@ -213,7 +211,7 @@ jobs:
 
           # Remove managed labels that are no longer affected.
           for label in "${CURRENT_MANAGED_LABELS[@]}"; do
-            if ! echo "$tools" | jq -e --arg label "$label" '.[] == $label' >/dev/null; then
+            if ! echo "$TOOLS_JSON" | jq -e --arg label "$label" '.[] == $label' >/dev/null; then
               gh pr edit "$PR_NUMBER" \
                 --repo "$REPO" \
                 --remove-label "$label" || true

@@ -42,12 +42,13 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           TAG: ${{ inputs.tag }}
+          TOOLS_JSON: ${{ inputs.tools }}
         shell: bash
         working-directory: homebrew-studhub-cli
         run: |
           set -euo pipefail
 
-          tools='${{ inputs.tools }}'
+          tools="$TOOLS_JSON"
 
           mkdir -p Formula
 
