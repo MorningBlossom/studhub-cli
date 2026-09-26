@@ -35,7 +35,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: MorningBlossom/scoop-studhub-cli
-          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          token: ${{ secrets.GH_PAT }}
           path: scoop-studhub-cli
 
       - name: Generate Scoop manifests
