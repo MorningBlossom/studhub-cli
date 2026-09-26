@@ -20,32 +20,50 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # Get changed files from the active PR
+          # Get all changed files from the active PR
           CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
           
-          # Extract folder name under cmd/
-          TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 | sort -u)
+          # 1. Detect tools directly modified inside cmd/
+          CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2)
 
-          if [ -z "$TOOLS" ]; then
-            echo "No changes detected in cmd/. Skipping label generation."
+          # 2. Detect tools indirectly affected by changes in pkg/
+          PKG_TOOLS=""
+          PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u)
+          
+          for pkg in $PKG_DIRS; do
+            echo "Detected change in shared package: pkg/$pkg"
+            # Search inside cmd/ for any tool that imports this package
+            if [ -d "./cmd" ]; then
+              # This finds import paths (e.g., ".../pkg/studhub-generator") and extracts the tool folder
+              AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2)
+              PKG_TOOLS="$PKG_TOOLS $AFFECTED"
+            fi
+          done
+
+          # Combine both lists, remove duplicates, and remove empty lines
+          ALL_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$')
+
+          if [ -z "$ALL_TOOLS" ]; then
+            echo "No relevant changes detected in cmd/ or pkg/. Skipping label generation."
             exit 0
           fi
 
-          # NEW: Count tools and enforce single-tool PRs
-          TOOL_COUNT=$(echo "$TOOLS" | wc -w)
+          # Count tools and enforce single-tool PRs (Monorepo Best Practice)
+          TOOL_COUNT=$(echo "$ALL_TOOLS" | wc -w)
           if [ "$TOOL_COUNT" -gt 1 ]; then
-            echo "❌ ERROR: Multiple tools modified in a single PR."
-            echo "Tools detected: $TOOLS"
+            echo "❌ ERROR: Multiple tools affected by these changes."
+            echo "Affected tools: $ALL_TOOLS"
             echo "To ensure clean, atomic releases, the CI/CD pipeline only supports releasing one tool at a time."
             echo "Please split these changes into separate Pull Requests."
             exit 1
           fi
 
-          for tool in $TOOLS; do
+          # Apply the label
+          for tool in $ALL_TOOLS; do
             if [ -d "./cmd/$tool" ]; then
               # Create the label if it doesn't exist, then attach it to the PR
               gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force
               gh pr edit "$PR_NUMBER" --add-label "$tool"
-              echo "✅ Added label: $tool"
+              echo "✅ Successfully added label: $tool"
             fi
           done
