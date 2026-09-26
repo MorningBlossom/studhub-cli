@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	generator "github.com/MorningBlossom/studhub-cli/pkg/studhub-generator"
+	generator "github.com/MorningBlossom/studhub-cli/pkg/studhub-generate"
 
 	"github.com/spf13/cobra"
 )

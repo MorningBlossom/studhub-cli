@@ -1,0 +1,131 @@
+name: Validate Binaries
+
+on:
+  workflow_call:
+    inputs:
+      tools:
+        description: "JSON array of CLI tools to validate"
+        required: true
+        type: string
+
+      ref:
+        description: "Git ref/SHA to build"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-matrix:
+    name: Prepare Matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+    steps:
+      - name: Generate matrix combinations
+        id: gen
+        env:
+          TOOLS_JSON: ${{ inputs.tools }}
+        shell: bash
+        run: |
+          tools="$TOOLS_JSON"
+          platforms='[
+            {"goos": "linux", "goarch": "amd64"},
+            {"goos": "linux", "goarch": "arm64"},
+            {"goos": "darwin", "goarch": "amd64"},
+            {"goos": "darwin", "goarch": "arm64"},
+            {"goos": "windows", "goarch": "amd64"}
+          ]'
+
+          matrix=$(echo "$tools" | jq -c --argjson platforms "$platforms" '
+            {
+              include: [
+                .[] as $tool |
+                $platforms[] |
+                . + {tool: $tool}
+              ]
+            }
+          ')
+
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify dependencies
+        run: go mod verify
+
+      - name: Build binary
+        env:
+          TOOL: ${{ matrix.tool }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          binary_name="$TOOL"
+
+          if [ "$GOOS" = "windows" ]; then
+            binary_name="${binary_name}.exe"
+          fi
+
+          echo "Building:"
+          echo "  Tool:   $TOOL"
+          echo "  GOOS:   $GOOS"
+          echo "  GOARCH: $GOARCH"
+
+          go build \
+            -trimpath \
+            -o "dist/${binary_name}" \
+            "./cmd/$TOOL"
+
+          test -f "dist/${binary_name}"
+
+      - name: Verify binary
+        env:
+          TOOL: ${{ matrix.tool }}
+          GOOS: ${{ matrix.goos }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ "$GOOS" = "windows" ]; then
+            test -f "dist/${TOOL}.exe"
+          else
+            test -f "dist/${TOOL}"
+          fi
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1

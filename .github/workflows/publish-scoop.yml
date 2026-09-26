@@ -1,0 +1,126 @@
+name: Publish Scoop
+
+on:
+  workflow_call:
+    inputs:
+      tools:
+        description: "JSON array of CLI tools"
+        required: true
+        type: string
+
+      version:
+        description: "Release version"
+        required: true
+        type: string
+
+      tag:
+        description: "GitHub Release tag"
+        required: true
+        type: string
+
+    secrets:
+      PACKAGE_PUBLISH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Update Scoop manifests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Scoop bucket
+        uses: actions/checkout@v4
+        with:
+          repository: MorningBlossom/scoop-studhub-cli
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          path: scoop-studhub-cli
+
+      - name: Generate Scoop manifests
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          TOOLS_JSON: ${{ inputs.tools }}
+        shell: bash
+        working-directory: scoop-studhub-cli
+        run: |
+          set -euo pipefail
+
+          tools="$TOOLS_JSON"
+
+          mkdir -p bucket
+
+          echo "$tools" |
+            jq -r '.[]' |
+            while read -r tool; do
+
+              binary="${tool}-windows-amd64.exe"
+
+              url="https://github.com/MorningBlossom/studhub-cli/releases/download/${TAG}/${binary}"
+
+              echo "Downloading ${binary}"
+
+              curl \
+                --fail \
+                --location \
+                --retry 3 \
+                --output "/tmp/${binary}" \
+                "$url"
+
+              hash="$(
+                sha256sum "/tmp/${binary}" |
+                awk '{print $1}'
+              )"
+
+              cat > "bucket/${tool}.json" <<EOF
+          {
+            "version": "${VERSION}",
+            "architecture": {
+              "64bit": {
+                "url": "${url}#/$(echo "$tool").exe",
+                "hash": "${hash}"
+              }
+            },
+            "bin": "${tool}.exe",
+            "description": "StudHub CLI tool: ${tool}",
+            "homepage": "https://github.com/MorningBlossom/studhub-cli"
+          }
+          EOF
+
+            done
+
+      - name: Validate JSON manifests
+        shell: bash
+        working-directory: scoop-studhub-cli
+        run: |
+          set -euo pipefail
+
+          for manifest in bucket/*.json; do
+            echo "Validating ${manifest}"
+            jq empty "$manifest"
+          done
+
+      - name: Commit and push manifests
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        working-directory: scoop-studhub-cli
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add bucket/
+
+          if git diff --cached --quiet; then
+            echo "No Scoop manifest changes."
+            exit 0
+          fi
+
+          git commit \
+            -m "chore: release studhub-cli ${VERSION}"
+
+          git push origin HEAD:main

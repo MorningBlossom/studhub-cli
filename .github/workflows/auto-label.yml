@@ -1,120 +1,230 @@
-name: Auto Label PR
+name: Auto Label & Validate
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened]
+    types:
+      - opened
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: cli-validation-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
-  auto-label:
+  detect-and-label:
+    name: Detect affected tools
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: write
+
+    outputs:
+      tools: ${{ steps.detect.outputs.tools }}
+      has-tools: ${{ steps.detect.outputs.has-tools }}
+
     steps:
-      - name: Checkout Repository
+      - name: Checkout PR
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
 
-      - name: Detect and Apply Tool Labels
+      - name: Detect affected tools
+        id: detect
         env:
-          GITHUB_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        shell: bash
         run: |
-          # 1. Fetch changed files
-          CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
-          
-          # 2. Detect tools directly modified inside cmd/
-          CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 || true)
+          set -euo pipefail
 
-          # 3. Detect tools indirectly affected by changes in pkg/
-          PKG_TOOLS=""
-          PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u || true)
-          
-          for pkg in $PKG_DIRS; do
-            if [ -n "$pkg" ]; then
-              if [ -d "./cmd/$pkg" ]; then
-                PKG_TOOLS="$PKG_TOOLS $pkg"
-              fi
-              if [ -d "./cmd" ]; then
-                AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2 || true)
-                for affected_tool in $AFFECTED; do
-                  if [ -n "$affected_tool" ]; then
-                    PKG_TOOLS="$PKG_TOOLS $affected_tool"
-                  fi
-                done
-              fi
-            fi
-          done
+          echo "Base SHA: $BASE_SHA"
+          echo "Head SHA: $HEAD_SHA"
 
-          # 4. Consolidate ALL tools found in the diff
-          ALL_CHANGED_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+          git fetch origin "$BASE_SHA" --depth=1 || true
 
-          # 5. Filter down to ACTIVE tools (folders that actually still exist on disk)
-          ACTIVE_TOOLS=""
-          for tool in $ALL_CHANGED_TOOLS; do
-            if [ -d "./cmd/$tool" ]; then
-              ACTIVE_TOOLS="$ACTIVE_TOOLS $tool"
-            fi
-          done
-          ACTIVE_TOOLS=$(echo "$ACTIVE_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
+          mapfile -t ALL_TOOLS < <(
+            find cmd \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -printf '%f\n' |
+            sort
+          )
 
-          # 6. RECONCILIATION: Clean up obsolete labels
-          CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
-          
-          # Fetch all labels in the repository that we created (using the description as a watermark)
-          MANAGED_LABELS=$(gh label list --limit 1000 | grep 'Auto-generated trigger' | awk -F'\t' '{print $1}' || true)
-
-          for label in $CURRENT_LABELS; do
-            if [ -n "$label" ]; then
-              IS_MANAGED=0
-              
-              # Check if the label is one of our auto-generated ones
-              for managed in $MANAGED_LABELS; do
-                if [ "$managed" == "$label" ]; then
-                  IS_MANAGED=1
-                  break
-                fi
-              done
-              
-              # Fallback: If it was actively touched in this diff, we manage it
-              for changed in $ALL_CHANGED_TOOLS; do
-                if [ "$changed" == "$label" ]; then
-                  IS_MANAGED=1
-                  break
-                fi
-              done
-
-              # If we own this label, verify it is still active
-              if [ $IS_MANAGED -eq 1 ]; then
-                IS_ACTIVE=0
-                for tool in $ACTIVE_TOOLS; do
-                  if [ "$tool" == "$label" ]; then
-                    IS_ACTIVE=1
-                    break
-                  fi
-                done
-                
-                # If it is NOT active (folder deleted or commit reverted), remove it
-                if [ $IS_ACTIVE -eq 0 ]; then
-                  echo "🧹 Removing obsolete tool label: $label"
-                  gh pr edit "$PR_NUMBER" --remove-label "$label" || true
-                fi
-              fi
-            fi
-          done
-
-          # 7. Exit early if no active tool changes remain
-          if [ -z "$ACTIVE_TOOLS" ]; then
-            echo "No active tool changes remain (tools were reverted or deleted). Pipeline complete."
+          if [ "${#ALL_TOOLS[@]}" -eq 0 ]; then
+            echo "No CLI tools found under cmd/"
+            echo 'tools=[]' >> "$GITHUB_OUTPUT"
+            echo 'has-tools=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          echo "✅ Active tools to be labeled: $ACTIVE_TOOLS"
+          mapfile -t CHANGED_FILES < <(
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA"
+          )
 
-          # 8. Apply labels for all currently active tools
-          for tool in $ACTIVE_TOOLS; do
-            # Create the label with our watermark description if it doesn't exist
-            gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force || true
-            gh pr edit "$PR_NUMBER" --add-label "$tool"
-            echo "✅ Successfully added label: $tool"
+          echo "Changed files:"
+          printf ' - %s\n' "${CHANGED_FILES[@]}"
+
+          declare -A AFFECTED=()
+
+          # Direct changes inside cmd/<tool>
+          for file in "${CHANGED_FILES[@]}"; do
+            for tool in "${ALL_TOOLS[@]}"; do
+              if [[ "$file" == "cmd/$tool/"* ]]; then
+                AFFECTED["$tool"]=1
+              fi
+            done
           done
+
+          # Changes to Go module metadata can affect every CLI.
+          for file in "${CHANGED_FILES[@]}"; do
+            if [[ "$file" == "go.mod" || "$file" == "go.sum" ]]; then
+              for tool in "${ALL_TOOLS[@]}"; do
+                AFFECTED["$tool"]=1
+              done
+            fi
+          done
+
+          # Changes under pkg/<package> affect CLIs importing that package.
+          declare -A CHANGED_PACKAGES=()
+
+          for file in "${CHANGED_FILES[@]}"; do
+            if [[ "$file" == pkg/* ]]; then
+              package_path="${file#pkg/}"
+              package_name="${package_path%%/*}"
+
+              if [ -n "$package_name" ]; then
+                CHANGED_PACKAGES["$package_name"]=1
+              fi
+            fi
+          done
+
+          for package_name in "${!CHANGED_PACKAGES[@]}"; do
+            import_path="github.com/MorningBlossom/studhub-cli/pkg/$package_name"
+
+            echo "Changed package: $package_name"
+            echo "Looking for importers of: $import_path"
+
+            for tool in "${ALL_TOOLS[@]}"; do
+              if grep -Rqs \
+                --include='*.go' \
+                --exclude-dir='.git' \
+                "\"$import_path\"" \
+                "cmd/$tool"; then
+
+                echo "  -> $tool depends on $package_name"
+                AFFECTED["$tool"]=1
+              fi
+            done
+          done
+
+          # Conservative rule for shared CI/configuration changes.
+          # This avoids accidentally skipping validation when a shared
+          # repository-level configuration affects every binary.
+          for file in "${CHANGED_FILES[@]}"; do
+            case "$file" in
+              .github/workflows/*)
+                for tool in "${ALL_TOOLS[@]}"; do
+                  AFFECTED["$tool"]=1
+                done
+                ;;
+            esac
+          done
+
+          TOOLS_JSON=$(
+            printf '%s\n' "${!AFFECTED[@]}" |
+            sort |
+            jq -Rsc 'split("\n") | map(select(length > 0))'
+          )
+
+          if [ "$TOOLS_JSON" = "[]" ]; then
+            echo "No CLI tools are affected."
+            echo "tools=[]" >> "$GITHUB_OUTPUT"
+            echo "has-tools=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Affected tools: $TOOLS_JSON"
+
+          echo "tools=$TOOLS_JSON" >> "$GITHUB_OUTPUT"
+          echo "has-tools=true" >> "$GITHUB_OUTPUT"
+
+      - name: Create managed labels
+        if: steps.detect.outputs.has-tools == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TOOLS_JSON: ${{ steps.detect.outputs.tools }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "$TOOLS_JSON" |
+            jq -r '.[]' |
+            while read -r tool; do
+              gh label create "$tool" \
+                --repo "$REPO" \
+                --description "Auto-generated trigger for $tool" \
+                --color "1D76DB" \
+                --force
+            done
+
+      - name: Reconcile PR labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          TOOLS_JSON: ${{ steps.detect.outputs.tools }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t AFFECTED_TOOLS < <(
+            echo "$TOOLS_JSON" | jq -r '.[]'
+          )
+
+          mapfile -t CURRENT_MANAGED_LABELS < <(
+            gh label list \
+              --repo "$REPO" \
+              --limit 1000 \
+              --json name,description |
+            jq -r '
+              .[]
+              | select(
+                  (.description // "")
+                  | startswith("Auto-generated trigger for ")
+                )
+              | .name
+            '
+          )
+
+          # Add affected labels.
+          for tool in "${AFFECTED_TOOLS[@]}"; do
+            gh pr edit "$PR_NUMBER" \
+              --repo "$REPO" \
+              --add-label "$tool"
+          done
+
+          # Remove managed labels that are no longer affected.
+          for label in "${CURRENT_MANAGED_LABELS[@]}"; do
+            if ! echo "$TOOLS_JSON" | jq -e --arg label "$label" '.[] == $label' >/dev/null; then
+              gh pr edit "$PR_NUMBER" \
+                --repo "$REPO" \
+                --remove-label "$label" || true
+            fi
+          done
+
+  validate:
+    name: Validate binaries
+    needs: detect-and-label
+    if: needs.detect-and-label.outputs.has-tools == 'true'
+
+    uses: ./.github/workflows/validate-binaries.yml
+
+    with:
+      tools: ${{ needs.detect-and-label.outputs.tools }}
+      ref: ${{ github.event.pull_request.head.sha }}

@@ -1,0 +1,169 @@
+name: Publish Homebrew
+
+on:
+  workflow_call:
+    inputs:
+      tools:
+        description: "JSON array of CLI tools"
+        required: true
+        type: string
+
+      version:
+        description: "Release version"
+        required: true
+        type: string
+
+      tag:
+        description: "GitHub Release tag"
+        required: true
+        type: string
+
+    secrets:
+      PACKAGE_PUBLISH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: Update Homebrew formulas
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: MorningBlossom/homebrew-studhub-cli
+          token: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+          path: homebrew-studhub-cli
+
+      - name: Download release binaries and generate formulas
+        env:
+          VERSION: ${{ inputs.version }}
+          TAG: ${{ inputs.tag }}
+          TOOLS_JSON: ${{ inputs.tools }}
+        shell: bash
+        working-directory: homebrew-studhub-cli
+        run: |
+          set -euo pipefail
+
+          tools="$TOOLS_JSON"
+
+          mkdir -p Formula
+
+          echo "$tools" |
+            jq -r '.[]' |
+            while read -r tool; do
+
+              echo "Processing ${tool}"
+
+              darwin_arm="${tool}-darwin-arm64"
+              darwin_amd="${tool}-darwin-amd64"
+              linux_arm="${tool}-linux-arm64"
+              linux_amd="${tool}-linux-amd64"
+
+              base_url="https://github.com/MorningBlossom/studhub-cli/releases/download/${TAG}"
+
+              curl --fail --location --retry 3 \
+                -o "/tmp/${darwin_arm}" \
+                "${base_url}/${darwin_arm}"
+
+              curl --fail --location --retry 3 \
+                -o "/tmp/${darwin_amd}" \
+                "${base_url}/${darwin_amd}"
+
+              curl --fail --location --retry 3 \
+                -o "/tmp/${linux_arm}" \
+                "${base_url}/${linux_arm}"
+
+              curl --fail --location --retry 3 \
+                -o "/tmp/${linux_amd}" \
+                "${base_url}/${linux_amd}"
+
+              darwin_arm_sha="$(sha256sum "/tmp/${darwin_arm}" | awk '{print $1}')"
+              darwin_amd_sha="$(sha256sum "/tmp/${darwin_amd}" | awk '{print $1}')"
+              linux_arm_sha="$(sha256sum "/tmp/${linux_arm}" | awk '{print $1}')"
+              linux_amd_sha="$(sha256sum "/tmp/${linux_amd}" | awk '{print $1}')"
+
+              formula_class="$(
+                echo "$tool" |
+                awk -F- '{
+                  for (i = 1; i <= NF; i++) {
+                    printf "%s", toupper(substr($i,1,1)) substr($i,2)
+                  }
+                }'
+              )"
+
+              cat > "Formula/${tool}.rb" <<EOF
+          class ${formula_class} < Formula
+            desc "StudHub CLI tool: ${tool}"
+            homepage "https://github.com/MorningBlossom/studhub-cli"
+            version "${VERSION}"
+
+            if OS.mac? && Hardware::CPU.arm?
+              url "${base_url}/${darwin_arm}"
+              sha256 "${darwin_arm_sha}"
+            elsif OS.mac? && Hardware::CPU.intel?
+              url "${base_url}/${darwin_amd}"
+              sha256 "${darwin_amd_sha}"
+            elsif OS.linux? && Hardware::CPU.arm?
+              url "${base_url}/${linux_arm}"
+              sha256 "${linux_arm_sha}"
+            elsif OS.linux? && Hardware::CPU.intel?
+              url "${base_url}/${linux_amd}"
+              sha256 "${linux_amd_sha}"
+            end
+
+            def install
+              if OS.mac? && Hardware::CPU.arm?
+                bin.install "${darwin_arm}" => "${tool}"
+              elsif OS.mac? && Hardware::CPU.intel?
+                bin.install "${darwin_amd}" => "${tool}"
+              elsif OS.linux? && Hardware::CPU.arm?
+                bin.install "${linux_arm}" => "${tool}"
+              elsif OS.linux? && Hardware::CPU.intel?
+                bin.install "${linux_amd}" => "${tool}"
+              end
+            end
+
+            test do
+              assert_predicate bin/"${tool}", :exist?
+            end
+          end
+          EOF
+
+            done
+
+      - name: Validate formulas
+        shell: bash
+        working-directory: homebrew-studhub-cli
+        run: |
+          set -euo pipefail
+
+          for formula in Formula/*.rb; do
+            ruby -c "$formula"
+          done
+
+      - name: Commit and push formulas
+        env:
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        working-directory: homebrew-studhub-cli
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add Formula/
+
+          if git diff --cached --quiet; then
+            echo "No Homebrew formula changes."
+            exit 0
+          fi
+
+          git commit \
+            -m "chore: release studhub-cli ${VERSION}"
+
+          git push origin HEAD:main
