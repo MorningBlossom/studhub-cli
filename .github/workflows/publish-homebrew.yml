@@ -1,149 +1,212 @@
-name: Publish StudHub CLI to Homebrew
+name: Publish Homebrew
 
 on:
-  workflow_run:
-    workflows:
-      - Release StudHub CLI
-    types:
-      - completed
+  workflow_call:
+    inputs:
+      tools:
+        description: "JSON array containing CLI tools"
+        required: true
+        type: string
+
+      version:
+        description: "Release version"
+        required: true
+        type: string
+
+    secrets:
+      PACKAGE_PUBLISH_TOKEN:
+        required: true
+
+permissions:
+  contents: read
 
 jobs:
   publish:
-    if: github.event.workflow_run.conclusion == 'success'
-
+    name: Publish Homebrew formulas
     runs-on: ubuntu-latest
-
-    permissions:
-      contents: read
-
-    env:
-      ORG_NAME: MorningBlossom
 
     steps:
       - name: Checkout source repository
         uses: actions/checkout@v4
-        with:
-          ref: main
 
-      - name: Get release version
-        id: version
+      - name: Setup Git
+        shell: bash
         run: |
-          VERSION=$(git tag --sort=-version:refname | head -n 1)
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          if [ -z "$VERSION" ]; then
-            echo "Unable to determine release version"
-            exit 1
-          fi
-
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout Homebrew tap
+      - name: Clone Homebrew tap
         env:
-          GH_PAT: ${{ secrets.GH_PAT }}
-        run: |
-          git clone \
-            "https://${GH_PAT}@github.com/${ORG_NAME}/homebrew-studhub-cli.git" \
-            tap-repo
-
-      - name: Download release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir -p dist
-
-          gh release download \
-            "${{ steps.version.outputs.version }}" \
-            --repo "${{ github.repository }}" \
-            --dir dist
-
-      - name: Generate formulas
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+          TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+        shell: bash
         run: |
           set -euo pipefail
 
-          cd tap-repo
+          rm -rf homebrew-tap
 
-          mkdir -p Formula
+          git clone \
+            "https://x-access-token:${TOKEN}@github.com/MorningBlossom/homebrew-studhub-cli.git" \
+            homebrew-tap
 
-          for BINARY in ../dist/*; do
+          mkdir -p homebrew-tap/Formula
 
-            FILE=$(basename "$BINARY")
+      - name: Generate Homebrew formulas
+        env:
+          VERSION: ${{ inputs.version }}
+          TOOLS_JSON: ${{ inputs.tools }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-            case "$FILE" in
-              *-darwin-arm64)
-                TOOL="${FILE%-darwin-arm64}"
-                MAC_ARM=$(shasum -a 256 "$BINARY" | awk '{print $1}')
-                ;;
+          VERSION_NO_V="${VERSION#v}"
 
-              *-darwin-amd64)
-                TOOL="${FILE%-darwin-amd64}"
-                MAC_INTEL=$(shasum -a 256 "$BINARY" | awk '{print $1}')
-                ;;
+          echo "Generating Homebrew formulas for ${VERSION_NO_V}"
 
-              *-linux-amd64)
-                TOOL="${FILE%-linux-amd64}"
-                LINUX_INTEL=$(shasum -a 256 "$BINARY" | awk '{print $1}')
-                ;;
+          for TOOL in $(echo "${TOOLS_JSON}" | jq -r '.[]'); do
 
-              *)
-                continue
-                ;;
-            esac
+            echo ""
+            echo "======================================"
+            echo "Generating formula: ${TOOL}"
+            echo "======================================"
 
-            CLASS_NAME=$(
-              echo "$TOOL" |
-              awk -F- '{
-                for(i=1;i<=NF;i++)
-                  $i=toupper(substr($i,1,1)) substr($i,2)
-              }1' |
-              tr -d '-'
-            )
+            MAC_ARM_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-darwin-arm64.tar.gz"
+            MAC_AMD_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-darwin-amd64.tar.gz"
 
-            cat > "Formula/${TOOL}.rb" <<EOF
+            LINUX_ARM_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-linux-arm64.tar.gz"
+            LINUX_AMD_URL="https://github.com/MorningBlossom/studhub-cli/releases/download/${VERSION}/${TOOL}-linux-amd64.tar.gz"
+
+            echo "Downloading release assets..."
+
+            curl \
+              -fsSL \
+              -o /tmp/mac-arm.tar.gz \
+              "${MAC_ARM_URL}"
+
+            curl \
+              -fsSL \
+              -o /tmp/mac-amd.tar.gz \
+              "${MAC_AMD_URL}"
+
+            curl \
+              -fsSL \
+              -o /tmp/linux-arm.tar.gz \
+              "${LINUX_ARM_URL}"
+
+            curl \
+              -fsSL \
+              -o /tmp/linux-amd.tar.gz \
+              "${LINUX_AMD_URL}"
+
+            MAC_ARM_SHA="$(sha256sum /tmp/mac-arm.tar.gz | awk '{print $1}')"
+            MAC_AMD_SHA="$(sha256sum /tmp/mac-amd.tar.gz | awk '{print $1}')"
+
+            LINUX_ARM_SHA="$(sha256sum /tmp/linux-arm.tar.gz | awk '{print $1}')"
+            LINUX_AMD_SHA="$(sha256sum /tmp/linux-amd.tar.gz | awk '{print $1}')"
+
+            CLASS_NAME="$(
+              echo "${TOOL}" |
+              awk -F- '
+                {
+                  result=""
+                  for (i = 1; i <= NF; i++) {
+                    result = result toupper(substr($i,1,1)) substr($i,2)
+                  }
+                  print result
+                }
+              '
+            )"
+
+            FORMULA="homebrew-tap/Formula/${TOOL}.rb"
+
+            cat > "${FORMULA}" <<EOF
             class ${CLASS_NAME} < Formula
-              desc "StudHub CLI tool: ${TOOL}"
-              homepage "https://github.com/${{ github.repository }}"
-              version "${VERSION#v}"
+              desc "StudHub CLI"
+              homepage "https://github.com/MorningBlossom/studhub-cli"
+              version "${VERSION_NO_V}"
 
-              if OS.mac? && Hardware::CPU.arm?
-                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL}-darwin-arm64"
-                sha256 "${MAC_ARM}"
-              elsif OS.mac? && Hardware::CPU.intel?
-                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL}-darwin-amd64"
-                sha256 "${MAC_INTEL}"
-              elsif OS.linux? && Hardware::CPU.intel?
-                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL}-linux-amd64"
-                sha256 "${LINUX_INTEL}"
-              end
+              on_macos do
+                on_arm do
+                  url "${MAC_ARM_URL}"
+                  sha256 "${MAC_ARM_SHA}"
 
-              def install
-                if OS.mac? && Hardware::CPU.arm?
-                  bin.install "${TOOL}-darwin-arm64" => "${TOOL}"
-                elsif OS.mac? && Hardware::CPU.intel?
-                  bin.install "${TOOL}-darwin-amd64" => "${TOOL}"
-                elsif OS.linux? && Hardware::CPU.intel?
-                  bin.install "${TOOL}-linux-amd64" => "${TOOL}"
+                  def install
+                    bin.install "${TOOL}-darwin-arm64" => "${TOOL}"
+                  end
+                end
+
+                on_intel do
+                  url "${MAC_AMD_URL}"
+                  sha256 "${MAC_AMD_SHA}"
+
+                  def install
+                    bin.install "${TOOL}-darwin-amd64" => "${TOOL}"
+                  end
                 end
               end
 
+              on_linux do
+                on_arm do
+                  url "${LINUX_ARM_URL}"
+                  sha256 "${LINUX_ARM_SHA}"
+
+                  def install
+                    bin.install "${TOOL}-linux-arm64" => "${TOOL}"
+                  end
+                end
+
+                on_intel do
+                  url "${LINUX_AMD_URL}"
+                  sha256 "${LINUX_AMD_SHA}"
+
+                  def install
+                    bin.install "${TOOL}-linux-amd64" => "${TOOL}"
+                  end
+                end
+              end
+
+              test do
+                assert_match version.to_s, shell_output("#{bin}/${TOOL} --version 2>&1", 0)
+              end
             end
             EOF
 
-            done
+            echo ""
+            echo "Generated formula:"
+            cat "${FORMULA}"
 
-      - name: Commit formulas
-        working-directory: tap-repo
+          done
+
+      - name: Validate formulas
+        shell: bash
         run: |
-          git config user.name "GitHub Actions CI"
-          git config user.email "actions@github.com"
+          set -euo pipefail
+
+          if [[ ! -d "homebrew-tap/Formula" ]]; then
+            echo "::error::Homebrew Formula directory does not exist."
+            exit 1
+          fi
+
+          find homebrew-tap/Formula \
+            -type f \
+            -name '*.rb' \
+            -print
+
+      - name: Commit Homebrew changes
+        env:
+          VERSION: ${{ inputs.version }}
+        working-directory: homebrew-tap
+        shell: bash
+        run: |
+          set -euo pipefail
 
           git add Formula/
 
           if git diff --cached --quiet; then
-            echo "No Homebrew changes."
+            echo "No Homebrew changes detected."
             exit 0
           fi
 
-          git commit -m "Update StudHub CLI formulas"
-          git push origin main
+          git commit \
+            -m "studhub-generate ${VERSION}"
+
+          git push origin HEAD

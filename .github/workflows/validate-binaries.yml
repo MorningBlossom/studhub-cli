@@ -1,0 +1,147 @@
+name: Validate StudHub CLI Binaries
+
+on:
+  workflow_call:
+    inputs:
+      tools:
+        description: "JSON array containing affected CLI tools"
+        required: true
+        type: string
+
+      ref:
+        description: "Git ref/SHA to validate"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        tool: ${{ fromJSON(inputs.tools) }}
+
+        goos:
+          - linux
+          - windows
+          - darwin
+
+        goarch:
+          - amd64
+          - arm64
+
+        exclude:
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Validate CLI directory
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+
+          if [[ ! -d "./cmd/${TOOL}" ]]; then
+            echo "::error::Tool directory ./cmd/${TOOL} does not exist"
+            exit 1
+          fi
+
+          echo "Valid CLI tool: ${TOOL}"
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+
+          mkdir -p dist
+
+          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
+
+          if [[ "${GOOS}" == "windows" ]]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+
+          OUTPUT="dist/${BINARY_NAME}"
+
+          echo "======================================"
+          echo "Building binary"
+          echo "======================================"
+          echo "Tool:   ${TOOL}"
+          echo "OS:     ${GOOS}"
+          echo "Arch:   ${GOARCH}"
+          echo "Output: ${OUTPUT}"
+          echo "======================================"
+
+          go build \
+            -trimpath \
+            -o "${OUTPUT}" \
+            "./cmd/${TOOL}"
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+          GOOS="${{ matrix.goos }}"
+          GOARCH="${{ matrix.goarch }}"
+
+          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
+
+          if [[ "${GOOS}" == "windows" ]]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+
+          BINARY="dist/${BINARY_NAME}"
+
+          if [[ ! -f "${BINARY}" ]]; then
+            echo "::error::Binary was not created: ${BINARY}"
+            exit 1
+          fi
+
+          if [[ ! -s "${BINARY}" ]]; then
+            echo "::error::Binary is empty: ${BINARY}"
+            exit 1
+          fi
+
+          echo "Binary successfully created:"
+          ls -lh "${BINARY}"
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 1

@@ -37,7 +37,7 @@ studhub-cli/
 │       └── main.go
 │
 ├── pkg/
-│   └── studhub-generator/
+│   └── studhub-generate/
 │       ├── generator.go
 │       ├── template.go
 │       └── templates/
@@ -118,7 +118,7 @@ generated microservice
 
 ---
 
-# 🧩 `pkg/studhub-generator`
+# 🧩 `pkg/studhub-generate`
 
 This package contains the actual microservice generation logic.
 
