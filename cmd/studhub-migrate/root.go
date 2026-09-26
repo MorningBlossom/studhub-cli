@@ -1,0 +1,1 @@
+cmd/studhub-generate/cmd/root.go
