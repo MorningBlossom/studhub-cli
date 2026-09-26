@@ -31,11 +31,21 @@ jobs:
             exit 0
           fi
 
+          # NEW: Count tools and enforce single-tool PRs
+          TOOL_COUNT=$(echo "$TOOLS" | wc -w)
+          if [ "$TOOL_COUNT" -gt 1 ]; then
+            echo "❌ ERROR: Multiple tools modified in a single PR."
+            echo "Tools detected: $TOOLS"
+            echo "To ensure clean, atomic releases, the CI/CD pipeline only supports releasing one tool at a time."
+            echo "Please split these changes into separate Pull Requests."
+            exit 1
+          fi
+
           for tool in $TOOLS; do
             if [ -d "./cmd/$tool" ]; then
               # Create the label if it doesn't exist, then attach it to the PR
               gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force
               gh pr edit "$PR_NUMBER" --add-label "$tool"
-              echo "Added label: $tool"
+              echo "✅ Added label: $tool"
             fi
           done
