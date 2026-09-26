@@ -46,7 +46,6 @@ func GenerateService(serviceName string) error {
 	}
 
 	// 4. Automatically initialize Go dependencies and format code
-
 	// initialize a new Go module
 	modName := fmt.Sprintf("github.com/MorningBlossom/%s", serviceName)
 	initCmd := exec.Command("go", "mod", "init", modName)
