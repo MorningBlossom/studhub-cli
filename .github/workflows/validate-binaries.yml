@@ -90,23 +90,26 @@ jobs:
 
           mkdir -p dist
 
-          binary_name="$TOOL"
-
+          extension=""
           if [ "$GOOS" = "windows" ]; then
-            binary_name="${binary_name}.exe"
+            extension=".exe"
           fi
 
-          echo "Building:"
-          echo "  Tool:   $TOOL"
-          echo "  GOOS:   $GOOS"
-          echo "  GOARCH: $GOARCH"
+          # Append platform/arch suffix so Homebrew and Scoop can find it
+          binary_name="${TOOL}-${GOOS}-${GOARCH}${extension}"
+
+          echo "Building ${binary_name}"
 
           go build \
             -trimpath \
+            -ldflags="-s -w" \
             -o "dist/${binary_name}" \
             "./cmd/$TOOL"
 
           test -f "dist/${binary_name}"
+
+          echo "Built:"
+          ls -lh "dist/${binary_name}"
 
       - name: Verify binary
         env:

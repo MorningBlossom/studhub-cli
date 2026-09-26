@@ -95,11 +95,13 @@ jobs:
 
           mkdir -p dist
 
-          binary_name="$TOOL"
-
+          extension=""
           if [ "$GOOS" = "windows" ]; then
-            binary_name="${binary_name}.exe"
+            extension=".exe"
           fi
+
+          # Append platform/arch suffix so Homebrew and Scoop can find it
+          binary_name="${TOOL}-${GOOS}-${GOARCH}${extension}"
 
           echo "Building ${binary_name}"
 
