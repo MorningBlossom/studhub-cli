@@ -23,7 +23,7 @@ jobs:
           # Get all changed files from the active PR
           CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
           
-          # 1. Detect tools directly modified inside cmd/ (added || true to prevent crash if empty)
+          # 1. Detect tools directly modified inside cmd/
           CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 || true)
 
           # 2. Detect tools indirectly affected by changes in pkg/
@@ -31,14 +31,26 @@ jobs:
           PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u || true)
           
           for pkg in $PKG_DIRS; do
-            # Ensure pkg is not an empty string
             if [ -n "$pkg" ]; then
-              echo "Detected change in shared package: pkg/$pkg"
-              # Search inside cmd/ for any tool that imports this package
+              echo "Detected change in package: pkg/$pkg"
+              
+              # Strategy A: Direct Name Match
+              # If a tool in cmd/ has the exact same name as the pkg/, flag it.
+              if [ -d "./cmd/$pkg" ]; then
+                echo "  -> Matched by folder name: cmd/$pkg"
+                PKG_TOOLS="$PKG_TOOLS $pkg"
+              fi
+              
+              # Strategy B: Import Search
+              # Search inside cmd/ for any tool that imports this pkg/ folder string
               if [ -d "./cmd" ]; then
-                # Added || true so it doesn't crash if no tool imports this specific package yet
                 AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2 || true)
-                PKG_TOOLS="$PKG_TOOLS $AFFECTED"
+                for affected_tool in $AFFECTED; do
+                  if [ -n "$affected_tool" ]; then
+                    echo "  -> Matched by import dependency: cmd/$affected_tool"
+                    PKG_TOOLS="$PKG_TOOLS $affected_tool"
+                  fi
+                done
               fi
             fi
           done
