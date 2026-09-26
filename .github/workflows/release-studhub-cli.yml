@@ -232,8 +232,9 @@ jobs:
       version: ${{ needs.detect-tools.outputs.version }}
       tag: ${{ needs.detect-tools.outputs.tag }}
 
-    secrets: inherit
-  
+    secrets: 
+      GH_PAT: ${{ secrets.GH_PAT }}
+
   publish-scoop:
     name: Publish Scoop manifests
     needs:
@@ -249,4 +250,5 @@ jobs:
       version: ${{ needs.detect-tools.outputs.version }}
       tag: ${{ needs.detect-tools.outputs.tag }}
 
-    secrets: inherit
+    secrets:
+      GH_PAT: ${{ secrets.GH_PAT }}

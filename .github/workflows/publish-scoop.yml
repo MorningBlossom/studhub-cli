@@ -19,9 +19,9 @@ on:
         type: string
 
     secrets:
-      PACKAGE_PUBLISH_TOKEN:
+      GH_PAT:
         required: true
-
+  
 permissions:
   contents: read
 
