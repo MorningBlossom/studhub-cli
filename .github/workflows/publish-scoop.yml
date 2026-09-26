@@ -1,0 +1,111 @@
+name: Publish StudHub CLI to Scoop
+
+on:
+  workflow_run:
+    workflows:
+      - Release StudHub CLI
+    types:
+      - completed
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      ORG_NAME: MorningBlossom
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Get release version
+        id: version
+        run: |
+          VERSION=$(git tag --sort=-version:refname | head -n 1)
+
+          if [ -z "$VERSION" ]; then
+            echo "Unable to determine release version"
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Scoop bucket
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git clone \
+            "https://${GH_PAT}@github.com/${ORG_NAME}/scoop-studhub-cli.git" \
+            scoop-repo
+
+      - name: Download Windows binaries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+
+          gh release download \
+            "${{ steps.version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*-windows-amd64.exe" \
+            --dir dist
+
+      - name: Generate Scoop manifests
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          VERSION_NUMBER="${VERSION#v}"
+
+          cd scoop-repo
+
+          mkdir -p bucket
+
+          for BINARY in ../dist/*-windows-amd64.exe; do
+
+            FILE=$(basename "$BINARY")
+
+            TOOL="${FILE%-windows-amd64.exe}"
+
+            HASH=$(shasum -a 256 "$BINARY" | awk '{print $1}')
+
+            cat > "bucket/${TOOL}.json" <<EOF
+            {
+              "version": "${VERSION_NUMBER}",
+              "architecture": {
+                "64bit": {
+                  "url": "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${FILE}",
+                  "hash": "${HASH}"
+                }
+              },
+              "bin": "${FILE}",
+              "description": "StudHub CLI tool: ${TOOL}",
+              "homepage": "https://github.com/${{ github.repository }}"
+            }
+            EOF
+
+          done
+
+      - name: Commit manifests
+        working-directory: scoop-repo
+        run: |
+          git config user.name "GitHub Actions CI"
+          git config user.email "actions@github.com"
+
+          git add bucket/
+
+          if git diff --cached --quiet; then
+            echo "No Scoop changes."
+            exit 0
+          fi
+
+          git commit -m "Update StudHub CLI manifests"
+          git push origin main

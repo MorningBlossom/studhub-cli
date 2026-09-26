@@ -1,0 +1,164 @@
+name: Validate StudHub CLI
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+
+concurrency:
+  group: cli-validation-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  identify-tools:
+    name: Identify CLI Tools
+    runs-on: ubuntu-latest
+
+    outputs:
+      tools: ${{ steps.get-tools.outputs.tools }}
+      has-tools: ${{ steps.get-tools.outputs.has-tools }}
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Determine tools from labels
+        id: get-tools
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VALID_TOOLS=()
+
+          while IFS= read -r label; do
+            if [ -d "./cmd/${label}" ]; then
+              VALID_TOOLS+=("${label}")
+            fi
+          done < <(
+            echo "${LABELS_JSON}" | jq -r '.[]'
+          )
+
+          if [ ${#VALID_TOOLS[@]} -eq 0 ]; then
+            echo "No CLI tool labels found."
+            echo 'tools=[]' >> "$GITHUB_OUTPUT"
+            echo 'has-tools=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TOOLS_JSON=$(
+            printf '%s\n' "${VALID_TOOLS[@]}" |
+            jq -R . |
+            jq -s -c .
+          )
+
+          echo "Detected tools:"
+          echo "${TOOLS_JSON}" | jq .
+
+          echo "tools=${TOOLS_JSON}" >> "$GITHUB_OUTPUT"
+          echo "has-tools=true" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
+    needs: identify-tools
+
+    if: needs.identify-tools.outputs.has-tools == 'true'
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        tool: ${{ fromJSON(needs.identify-tools.outputs.tools) }}
+
+        goos:
+          - linux
+          - windows
+          - darwin
+
+        goarch:
+          - amd64
+          - arm64
+
+        exclude:
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+
+          if [ ! -d "./cmd/${TOOL}" ]; then
+            echo "::error::Tool directory ./cmd/${TOOL} does not exist"
+            exit 1
+          fi
+
+          mkdir -p dist
+
+          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
+
+          if [ "${GOOS}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+
+          echo "Building:"
+          echo "  Tool:   ${TOOL}"
+          echo "  OS:     ${GOOS}"
+          echo "  Arch:   ${GOARCH}"
+          echo "  Output: dist/${BINARY_NAME}"
+
+          go build \
+            -trimpath \
+            -o "dist/${BINARY_NAME}" \
+            "./cmd/${TOOL}"
+
+      - name: Verify binary exists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+          BINARY_NAME="${TOOL}-${{ matrix.goos }}-${{ matrix.goarch }}"
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+
+          test -f "dist/${BINARY_NAME}"
+
+          echo "Binary successfully created:"
+          ls -lh "dist/${BINARY_NAME}"
+
+      - name: Upload validation artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 1

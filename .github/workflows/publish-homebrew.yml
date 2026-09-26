@@ -1,0 +1,149 @@
+name: Publish StudHub CLI to Homebrew
+
+on:
+  workflow_run:
+    workflows:
+      - Release StudHub CLI
+    types:
+      - completed
+
+jobs:
+  publish:
+    if: github.event.workflow_run.conclusion == 'success'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+
+    env:
+      ORG_NAME: MorningBlossom
+
+    steps:
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Get release version
+        id: version
+        run: |
+          VERSION=$(git tag --sort=-version:refname | head -n 1)
+
+          if [ -z "$VERSION" ]; then
+            echo "Unable to determine release version"
+            exit 1
+          fi
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout Homebrew tap
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          git clone \
+            "https://${GH_PAT}@github.com/${ORG_NAME}/homebrew-studhub-cli.git" \
+            tap-repo
+
+      - name: Download release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p dist
+
+          gh release download \
+            "${{ steps.version.outputs.version }}" \
+            --repo "${{ github.repository }}" \
+            --dir dist
+
+      - name: Generate formulas
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          cd tap-repo
+
+          mkdir -p Formula
+
+          for BINARY in ../dist/*; do
+
+            FILE=$(basename "$BINARY")
+
+            case "$FILE" in
+              *-darwin-arm64)
+                TOOL="${FILE%-darwin-arm64}"
+                MAC_ARM=$(shasum -a 256 "$BINARY" | awk '{print $1}')
+                ;;
+
+              *-darwin-amd64)
+                TOOL="${FILE%-darwin-amd64}"
+                MAC_INTEL=$(shasum -a 256 "$BINARY" | awk '{print $1}')
+                ;;
+
+              *-linux-amd64)
+                TOOL="${FILE%-linux-amd64}"
+                LINUX_INTEL=$(shasum -a 256 "$BINARY" | awk '{print $1}')
+                ;;
+
+              *)
+                continue
+                ;;
+            esac
+
+            CLASS_NAME=$(
+              echo "$TOOL" |
+              awk -F- '{
+                for(i=1;i<=NF;i++)
+                  $i=toupper(substr($i,1,1)) substr($i,2)
+              }1' |
+              tr -d '-'
+            )
+
+            cat > "Formula/${TOOL}.rb" <<EOF
+            class ${CLASS_NAME} < Formula
+              desc "StudHub CLI tool: ${TOOL}"
+              homepage "https://github.com/${{ github.repository }}"
+              version "${VERSION#v}"
+
+              if OS.mac? && Hardware::CPU.arm?
+                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL}-darwin-arm64"
+                sha256 "${MAC_ARM}"
+              elsif OS.mac? && Hardware::CPU.intel?
+                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL}-darwin-amd64"
+                sha256 "${MAC_INTEL}"
+              elsif OS.linux? && Hardware::CPU.intel?
+                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL}-linux-amd64"
+                sha256 "${LINUX_INTEL}"
+              end
+
+              def install
+                if OS.mac? && Hardware::CPU.arm?
+                  bin.install "${TOOL}-darwin-arm64" => "${TOOL}"
+                elsif OS.mac? && Hardware::CPU.intel?
+                  bin.install "${TOOL}-darwin-amd64" => "${TOOL}"
+                elsif OS.linux? && Hardware::CPU.intel?
+                  bin.install "${TOOL}-linux-amd64" => "${TOOL}"
+                end
+              end
+
+            end
+            EOF
+
+            done
+
+      - name: Commit formulas
+        working-directory: tap-repo
+        run: |
+          git config user.name "GitHub Actions CI"
+          git config user.email "actions@github.com"
+
+          git add Formula/
+
+          if git diff --cached --quiet; then
+            echo "No Homebrew changes."
+            exit 0
+          fi
+
+          git commit -m "Update StudHub CLI formulas"
+          git push origin main

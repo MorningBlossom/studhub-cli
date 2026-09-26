@@ -1,0 +1,208 @@
+name: Release StudHub CLI
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  identify-tools:
+    name: Identify CLI Tools
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main'
+
+    runs-on: ubuntu-latest
+
+    outputs:
+      tools: ${{ steps.get-tools.outputs.tools }}
+      has-tools: ${{ steps.get-tools.outputs.has-tools }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Determine tools from PR labels
+        id: get-tools
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          VALID_TOOLS=()
+
+          while IFS= read -r label; do
+            if [ -d "./cmd/${label}" ]; then
+              VALID_TOOLS+=("${label}")
+            fi
+          done < <(
+            echo "${LABELS_JSON}" | jq -r '.[]'
+          )
+
+          if [ ${#VALID_TOOLS[@]} -eq 0 ]; then
+            echo "No CLI tools found."
+            echo 'tools=[]' >> "$GITHUB_OUTPUT"
+            echo 'has-tools=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TOOLS_JSON=$(
+            printf '%s\n' "${VALID_TOOLS[@]}" |
+            jq -R . |
+            jq -s -c .
+          )
+
+          echo "Release tools:"
+          echo "${TOOLS_JSON}" | jq .
+
+          echo "tools=${TOOLS_JSON}" >> "$GITHUB_OUTPUT"
+          echo "has-tools=true" >> "$GITHUB_OUTPUT"
+
+  build-binaries:
+    name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
+
+    needs: identify-tools
+
+    if: needs.identify-tools.outputs.has-tools == 'true'
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+
+      matrix:
+        tool: ${{ fromJSON(needs.identify-tools.outputs.tools) }}
+
+        goos:
+          - linux
+          - windows
+          - darwin
+
+        goarch:
+          - amd64
+          - arm64
+
+        exclude:
+          - goos: windows
+            goarch: arm64
+
+    steps:
+      - name: Checkout merged main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Download dependencies
+        run: go mod download
+
+      - name: Verify modules
+        run: go mod verify
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+
+          if [ ! -d "./cmd/${TOOL}" ]; then
+            echo "::error::Tool directory ./cmd/${TOOL} does not exist"
+            exit 1
+          fi
+
+          mkdir -p dist
+
+          BINARY_NAME="${TOOL}-${GOOS}-${GOARCH}"
+
+          if [ "${GOOS}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+
+          go build \
+            -trimpath \
+            -o "dist/${BINARY_NAME}" \
+            "./cmd/${TOOL}"
+
+      - name: Verify binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TOOL="${{ matrix.tool }}"
+          BINARY_NAME="${TOOL}-${{ matrix.goos }}-${{ matrix.goarch }}"
+
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY_NAME="${BINARY_NAME}.exe"
+          fi
+
+          test -f "dist/${BINARY_NAME}"
+
+          echo "Successfully built:"
+          ls -lh "dist/${BINARY_NAME}"
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bin-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 7
+
+  publish-github-release:
+    name: Publish GitHub Release
+
+    needs:
+      - identify-tools
+      - build-binaries
+
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      needs.identify-tools.outputs.has-tools == 'true'
+
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    env:
+      VERSION: v1.0.${{ github.run_number }}
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: bin-*
+          merge-multiple: true
+
+      - name: List release binaries
+        run: |
+          echo "Release binaries:"
+          find dist -type f -maxdepth 1 -print
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.VERSION }}
+          name: StudHub CLI ${{ env.VERSION }}
+          generate_release_notes: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
