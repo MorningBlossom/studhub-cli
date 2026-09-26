@@ -17,7 +17,7 @@ jobs:
 
       - name: Detect and Apply Tool Labels
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           # 1. Fetch changed files
@@ -46,7 +46,7 @@ jobs:
             fi
           done
 
-          # 4. Consolidate ALL tools found in the diff (including deleted ones)
+          # 4. Consolidate ALL tools found in the diff
           ALL_CHANGED_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
           # 5. Filter down to ACTIVE tools (folders that actually still exist on disk)
@@ -58,22 +58,30 @@ jobs:
           done
           ACTIVE_TOOLS=$(echo "$ACTIVE_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
-          # 6. RECONCILIATION: Clean up obsolete labels
+          # 6. RECONCILIATION: Clean up obsolete labels using the Label Description Watermark
           CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
-          EXISTING_CMD_DIRS=$(ls -1 cmd/ 2>/dev/null || true)
 
           for label in $CURRENT_LABELS; do
-            IS_TOOL_LABEL=0
-            
-            # Identify if this label is a CLI tool (exists in cmd/ OR was in the recent diff)
-            if echo "$EXISTING_CMD_DIRS" | grep -q "^${label}$"; then IS_TOOL_LABEL=1; fi
-            if echo "$ALL_CHANGED_TOOLS" | grep -q "^${label}$"; then IS_TOOL_LABEL=1; fi
-            
-            if [ $IS_TOOL_LABEL -eq 1 ]; then
-              # If it's a tool label, verify it is still actively modified in this PR
-              if ! echo "$ACTIVE_TOOLS" | grep -q "^${label}$"; then
-                echo "🧹 Removing obsolete tool label: $label"
-                gh pr edit "$PR_NUMBER" --remove-label "$label" || true
+            if [ -n "$label" ]; then
+              # Check if the label is currently active in the PR
+              IS_ACTIVE=0
+              for tool in $ACTIVE_TOOLS; do
+                if [ "$tool" == "$label" ]; then
+                  IS_ACTIVE=1
+                  break
+                fi
+              done
+
+              # If it is NOT an active tool, verify if it's one of our auto-generated labels
+              if [ $IS_ACTIVE -eq 0 ]; then
+                # Fetch the label's description from the repository
+                LABEL_DESC=$(gh label view "$label" --json description -q '.description' 2>/dev/null || true)
+                
+                # If the description matches our watermark, it is an obsolete tool label. Remove it.
+                if [[ "$LABEL_DESC" == Auto-generated\ trigger* ]]; then
+                  echo "🧹 Removing obsolete tool label: $label"
+                  gh pr edit "$PR_NUMBER" --remove-label "$label" || true
+                fi
               fi
             fi
           done
@@ -88,6 +96,7 @@ jobs:
 
           # 8. Apply labels for all currently active tools
           for tool in $ACTIVE_TOOLS; do
+            # Create the label with our watermark description if it doesn't exist
             gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force || true
             gh pr edit "$PR_NUMBER" --add-label "$tool"
             echo "✅ Successfully added label: $tool"
