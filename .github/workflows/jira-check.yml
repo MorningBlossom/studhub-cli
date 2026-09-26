@@ -1,0 +1,9 @@
+name: jira ticket validation
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  call-jira-label-pipeline:
+    uses: MorningBlossom/ci-cd/.github/workflows/jira-validation.yml@main
+    secrets: inherit

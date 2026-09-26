@@ -26,9 +26,11 @@ func renderTemplate(tmplPath string, destPath string, data TemplateData) error {
 	}
 
 	file, err := os.Create(destPath)
+
 	if err != nil {
 		return err
 	}
+	
 	defer file.Close()
 
 	return tmpl.Execute(file, data)
