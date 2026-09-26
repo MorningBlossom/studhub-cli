@@ -3,9 +3,6 @@ name: Validate StudHub CLI
 on:
   pull_request:
     types:
-      - opened
-      - synchronize
-      - reopened
       - labeled
       - unlabeled
 
