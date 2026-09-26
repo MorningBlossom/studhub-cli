@@ -16,6 +16,7 @@ The goal is to provide developers with a **consistent, ready-to-use starting poi
 * 🛠️ Makefile with common development commands
 * 🔧 Git and `.gitignore` configuration
 * 🔄 GitHub Actions CI/CD workflow
+* 🏷️ GitHub Labels & Service Organization
 * 👥 CODEOWNERS support for controlled PR approvals
 * 📄 Automatically generate project documentation
 * 📦 Initialize required Go dependencies
@@ -279,6 +280,7 @@ The generated project also performs the standard Go module setup and formatting 
 
 ```bash
 go mod init
+go mod init github.com/MorningBlossom/<service-name>
 go get github.com/jackc/pgx/v5
 go mod tidy
 go fmt ./...
@@ -314,9 +316,55 @@ The workflow provides a standard foundation for automating build, validation, an
 
 ---
 
+# 🏷️ GitHub Labels & Service Organization
+
+The StudHub project uses **GitHub Labels** to organize and categorize work based on the service or component it belongs to.
+
+Each microservice can have its own dedicated label, making it easier to identify and filter:
+
+* Issues
+* Feature requests
+* Bug reports
+* Pull requests
+* Development tasks
+
+For the StudHub CLI, the label used is:
+
+```text
+studhub-generate
+```
+
+This allows all issues and development activities related to the **StudHub CLI** to be easily identified and separated from work belonging to other StudHub services.
+
+For example:
+
+```text
+GitHub Project
+│
+├── studhub-generate
+│   ├── CLI development
+│   ├── Template changes
+│   ├── Generator improvements
+│   ├── Bug fixes
+│   └── Documentation
+│
+├── <service-label>
+│   ├── Service-specific issues
+│   └── Service-specific development
+│
+└── <another-service-label>
+    ├── Service-specific issues
+    └── Service-specific development
+```
+
+Using service-specific labels provides a consistent way to **segregate and track work across the different StudHub microservices** without mixing issues or tasks between projects.
+
+The `studhub-generate` label therefore acts as the identifier for all GitHub work associated with the StudHub CLI.
+
+
 # 👥 CODEOWNERS & Pull Request Approval
 
-The generated `.github` configuration also includes **CODEOWNERS**.
+The`.github` configuration also includes **CODEOWNERS**.
 
 CODEOWNERS is used to define the specific developers or groups responsible for particular parts of the repository.
 
@@ -433,13 +481,36 @@ For macOS, the CLI can be distributed through Homebrew.
 
 Once the StudHub Homebrew formula/tap is configured, developers can install the CLI through Homebrew and keep it updated using the standard Homebrew commands.
 
-Example update command:
+# 🍺 Installing StudHub CLI Using Homebrew
+
+Add the StudHub Homebrew tap:
 
 ```bash
-brew upgrade studhub-generate
+brew tap MorningBlossom/studhub-cli
+```
+
+Install the CLI:
+
+```bash
+brew install studhub-generate
+```
+
+After installation:
+
+```bash
+studhub-generate service <service-name>
+```
+
+Example:
+
+```bash
+studhub-generate service auth-service
 ```
 
 ---
+
+
+
 
 # 🔁 Generation Workflow
 
