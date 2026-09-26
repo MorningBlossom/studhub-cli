@@ -5,56 +5,60 @@ on:
     types: [closed]
 
 jobs:
-  # JOB 1: Identify which tool to build based on PR labels
+  # JOB 1: Identify all tools to build based on PR labels
   identify-tool:
     if: github.event.pull_request.merged == true
-    name: Identify Tool from Labels
+    name: Identify Tools from Labels
     runs-on: ubuntu-latest
     outputs:
-      # Pass the extracted tool name to the other jobs
-      tool_name: ${{ steps.get_tool.outputs.TOOL_NAME }}
+      # Passes a JSON array of tool names (e.g., ["studhub-generate", "studhub-migrate"])
+      tools: ${{ steps.get_tools.outputs.TOOLS_JSON }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Determine Tool from Labels
-        id: get_tool
+      - name: Determine Tools from Labels
+        id: get_tools
         env:
-          # Pass labels as a JSON array to safely handle spaces in label names
           LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
         run: |
-          FOUND_TOOL=""
+          VALID_TOOLS=()
 
-          # Safely read the JSON array of labels using jq
+          # Safely read the JSON array of labels and add matching folders to the bash array
           for label in $(echo "$LABELS_JSON" | jq -r '.[]'); do
             if [ -d "./cmd/$label" ]; then
-              FOUND_TOOL="$label"
-              break
+              VALID_TOOLS+=("$label")
             fi
           done
 
-          if [ -z "$FOUND_TOOL" ]; then
+          if [ ${#VALID_TOOLS[@]} -eq 0 ]; then
             echo "No label matching a folder in cmd/ was found. Skipping release."
             exit 1
           fi
 
-          echo "Found tool from label: $FOUND_TOOL"
-          echo "TOOL_NAME=$FOUND_TOOL" >> $GITHUB_OUTPUT
+          # Convert bash array to JSON array
+          JSON_ARRAY=$(printf '%s\n' "${VALID_TOOLS[@]}" | jq -R . | jq -s -c .)
+          
+          echo "Found tools: $JSON_ARRAY"
+          echo "TOOLS_JSON=$JSON_ARRAY" >> $GITHUB_OUTPUT
 
+  # JOB 2: Build Binaries (Dynamic Matrix handles multiple tools at once)
   build-binaries:
     needs: identify-tool
     if: github.event.pull_request.merged == true
     name: Build Binaries
     runs-on: ubuntu-latest
-    env:
-      TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
     strategy:
       matrix:
+        # Dynamically expands to build every tool found in JOB 1
+        tool: ${{ fromJSON(needs.identify-tool.outputs.tools) }}
         goos: [linux, windows, darwin]
         goarch: [amd64, arm64]
         exclude:
           - goos: windows
             goarch: arm64
+    env:
+      TOOL_NAME: ${{ matrix.tool }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -72,7 +76,6 @@ jobs:
           if [ ! -d "./cmd/${TOOL_NAME}" ]; then exit 1; fi
           mkdir -p dist
 
-          # Format the name first, then append .exe if it is Windows
           BINARY_NAME="${TOOL_NAME}-${GOOS}-${GOARCH}"
           if [ "$GOOS" = "windows" ]; then
             BINARY_NAME="${BINARY_NAME}.exe"
@@ -83,19 +86,18 @@ jobs:
       - name: Store Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
+          # Unique artifact name prevents matrix collisions
+          name: bin-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
 
-  # JOB 2: Release to Main Repo
+  # JOB 3: Release to Main Repo (Pulls all artifacts from the matrix)
   publish-github-release:
     needs: [build-binaries, identify-tool]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
       VERSION: v1.0.${{ github.run_number }}
-      ORG_NAME: MorningBlossom
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -114,13 +116,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
 
+  # JOB 4: Homebrew Formula (Loops through tools and commits them together)
   publish-binaries-to-homebrew:
     needs: [publish-github-release, identify-tool]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
       VERSION: v1.0.${{ github.run_number }}
       ORG_NAME: MorningBlossom
     steps:
@@ -130,53 +132,55 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Create and Push Homebrew Formula
+      - name: Create and Push Homebrew Formulas
         run: |
-          MAC_ARM=$(shasum -a 256 dist/${TOOL_NAME}-darwin-arm64 | awk '{print $1}')
-          MAC_INTEL=$(shasum -a 256 dist/${TOOL_NAME}-darwin-amd64 | awk '{print $1}')
-          LINUX_INTEL=$(shasum -a 256 dist/${TOOL_NAME}-linux-amd64 | awk '{print $1}')
-
-          CLASS_NAME=$(echo "$TOOL_NAME" | awk -F- '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2))}1' OFS="")
-
           git clone https://${{ secrets.GH_PAT }}@github.com/${ORG_NAME}/homebrew-studhub-cli.git tap-repo
           cd tap-repo
           mkdir -p Formula
 
-          cat > Formula/${TOOL_NAME}.rb <<EOF
-          class ${CLASS_NAME} < Formula
-            desc "StudHub CLI tool: ${TOOL_NAME}"
-            homepage "https://github.com/${{ github.repository }}"
-            version "${VERSION}"
+          # Loop through each tool in the JSON array
+          for TOOL_NAME in $(echo '${{ needs.identify-tool.outputs.tools }}' | jq -r '.[]'); do
+            MAC_ARM=$(shasum -a 256 $GITHUB_WORKSPACE/dist/${TOOL_NAME}-darwin-arm64 | awk '{print $1}')
+            MAC_INTEL=$(shasum -a 256 $GITHUB_WORKSPACE/dist/${TOOL_NAME}-darwin-amd64 | awk '{print $1}')
+            LINUX_INTEL=$(shasum -a 256 $GITHUB_WORKSPACE/dist/${TOOL_NAME}-linux-amd64 | awk '{print $1}')
 
-            if OS.mac? && Hardware::CPU.arm?
-              url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-darwin-arm64"
-              sha256 "${MAC_ARM}"
-            elsif OS.mac? && Hardware::CPU.intel?
-              url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-darwin-amd64"
-              sha256 "${MAC_INTEL}"
-            elsif OS.linux? && Hardware::CPU.intel?
-              url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-linux-amd64"
-              sha256 "${LINUX_INTEL}"
-            end
+            CLASS_NAME=$(echo "$TOOL_NAME" | awk -F- '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) tolower(substr($i,2))}1' OFS="")
 
-            def install
+            cat > Formula/${TOOL_NAME}.rb <<EOF
+            class ${CLASS_NAME} < Formula
+              desc "StudHub CLI tool: ${TOOL_NAME}"
+              homepage "https://github.com/${{ github.repository }}"
+              version "${VERSION}"
+
               if OS.mac? && Hardware::CPU.arm?
-                bin.install "${TOOL_NAME}-darwin-arm64" => "${TOOL_NAME}"
+                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-darwin-arm64"
+                sha256 "${MAC_ARM}"
               elsif OS.mac? && Hardware::CPU.intel?
-                bin.install "${TOOL_NAME}-darwin-amd64" => "${TOOL_NAME}"
+                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-darwin-amd64"
+                sha256 "${MAC_INTEL}"
               elsif OS.linux? && Hardware::CPU.intel?
-                bin.install "${TOOL_NAME}-linux-amd64" => "${TOOL_NAME}"
+                url "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-linux-amd64"
+                sha256 "${LINUX_INTEL}"
+              end
+
+              def install
+                if OS.mac? && Hardware::CPU.arm?
+                  bin.install "${TOOL_NAME}-darwin-arm64" => "${TOOL_NAME}"
+                elsif OS.mac? && Hardware::CPU.intel?
+                  bin.install "${TOOL_NAME}-darwin-amd64" => "${TOOL_NAME}"
+                elsif OS.linux? && Hardware::CPU.intel?
+                  bin.install "${TOOL_NAME}-linux-amd64" => "${TOOL_NAME}"
+                end
               end
             end
-          end
           EOF
+            git add Formula/${TOOL_NAME}.rb
+          done
 
           git config user.name "GitHub Actions CI"
           git config user.email "actions@github.com"
-          git add Formula/${TOOL_NAME}.rb
-          # Check if there are changes before committing
           if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "Auto-generate ${TOOL_NAME} formula for ${VERSION}"
+            git commit -m "Auto-generate formulas for release ${VERSION}"
             git push origin main
           else
             echo "No changes detected for Homebrew formula. Skipping commit."
@@ -185,13 +189,13 @@ jobs:
       - name: Cleanup
         run: rm -rf tap-repo
 
+  # JOB 5: Scoop Manifest (Loops through tools and commits them together)
   publish-binaries-to-scoop:
     needs: [publish-github-release, identify-tool]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
-      TOOL_NAME: ${{ needs.identify-tool.outputs.tool_name }}
       VERSION: v1.0.${{ github.run_number }}
       ORG_NAME: MorningBlossom
     steps:
@@ -201,37 +205,39 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Create and Push Scoop Manifest
+      - name: Create and Push Scoop Manifests
         run: |
-          WINDOWS_INTEL=$(shasum -a 256 dist/${TOOL_NAME}-windows-amd64.exe | awk '{print $1}')
-
           SCOOP_VERSION="${VERSION#v}"
 
           git clone https://${{ secrets.GH_PAT }}@github.com/${ORG_NAME}/scoop-studhub-cli.git scoop-repo
           cd scoop-repo
           mkdir -p bucket
 
-          cat > bucket/${TOOL_NAME}.json <<EOF
-          {
-            "version": "${SCOOP_VERSION}",
-            "architecture": {
-              "64bit": {
-                "url": "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-windows-amd64.exe#/${TOOL_NAME}.exe",
-                "hash": "${WINDOWS_INTEL}"
-              }
-            },
-            "bin": "${TOOL_NAME}.exe",
-            "description": "StudHub CLI tool: ${TOOL_NAME}",
-            "homepage": "https://github.com/${{ github.repository }}"
-          }
+          # Loop through each tool in the JSON array
+          for TOOL_NAME in $(echo '${{ needs.identify-tool.outputs.tools }}' | jq -r '.[]'); do
+            WINDOWS_INTEL=$(shasum -a 256 $GITHUB_WORKSPACE/dist/${TOOL_NAME}-windows-amd64.exe | awk '{print $1}')
+
+            cat > bucket/${TOOL_NAME}.json <<EOF
+            {
+              "version": "${SCOOP_VERSION}",
+              "architecture": {
+                "64bit": {
+                  "url": "https://github.com/${{ github.repository }}/releases/download/${VERSION}/${TOOL_NAME}-windows-amd64.exe#/${TOOL_NAME}.exe",
+                  "hash": "${WINDOWS_INTEL}"
+                }
+              },
+              "bin": "${TOOL_NAME}.exe",
+              "description": "StudHub CLI tool: ${TOOL_NAME}",
+              "homepage": "https://github.com/${{ github.repository }}"
+            }
           EOF
+            git add bucket/${TOOL_NAME}.json
+          done
 
           git config user.name "GitHub Actions CI"
           git config user.email "actions@github.com"
-          git add bucket/${TOOL_NAME}.json
-          # Check if there are changes before committing
           if [ -n "$(git status --porcelain)" ]; then
-            git commit -m "Auto-generate ${TOOL_NAME} manifest for ${VERSION}"
+            git commit -m "Auto-generate manifests for release ${VERSION}"
             git push origin main
           else
             echo "No changes detected for Scoop manifest. Skipping commit."
