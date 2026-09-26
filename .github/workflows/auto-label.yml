@@ -20,13 +20,10 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          # Get all changed files from the active PR
           CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
           
-          # 1. Detect tools directly modified inside cmd/
           CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 || true)
 
-          # 2. Detect tools indirectly affected by changes in pkg/
           PKG_TOOLS=""
           PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u || true)
           
@@ -51,17 +48,13 @@ jobs:
             fi
           done
 
-          # Combine both lists and remove duplicates
           ALL_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
-          # 3. RECONCILIATION: Remove stale tool labels
-          # Fetch current labels on the PR
+          # RECONCILIATION: Remove stale tool labels
           CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
 
           for label in $CURRENT_LABELS; do
-            # If the label matches a tool folder in cmd/
             if [ -n "$label" ] && [ -d "./cmd/$label" ]; then
-              # Check if this label exists in our newly calculated ALL_TOOLS
               IS_VALID=0
               for tool in $ALL_TOOLS; do
                 if [ "$tool" == "$label" ]; then
@@ -70,7 +63,6 @@ jobs:
                 fi
               done
               
-              # If it is no longer valid, remove it
               if [ $IS_VALID -eq 0 ]; then
                 echo "🧹 Removing stale label: $label"
                 gh pr edit "$PR_NUMBER" --remove-label "$label" || true
@@ -78,23 +70,14 @@ jobs:
             fi
           done
 
-          # 4. Exit if no tools are currently affected
           if [ -z "$ALL_TOOLS" ]; then
             echo "No relevant changes detected in cmd/ or pkg/ that affect a CLI tool. Skipping label addition."
             exit 0
           fi
 
-          # 5. Enforce single-tool PRs
-          TOOL_COUNT=$(echo "$ALL_TOOLS" | wc -w)
-          if [ "$TOOL_COUNT" -gt 1 ]; then
-            echo "❌ ERROR: Multiple tools affected by these changes."
-            echo "Affected tools: $ALL_TOOLS"
-            echo "To ensure clean, atomic releases, the CI/CD pipeline only supports releasing one tool at a time."
-            echo "Please split these changes into separate Pull Requests."
-            exit 1
-          fi
+          echo "✅ Affected tools to be labeled: $ALL_TOOLS"
 
-          # 6. Apply current labels
+          # Apply current labels (Multiple tools are now fully supported)
           for tool in $ALL_TOOLS; do
             if [ -n "$tool" ] && [ -d "./cmd/$tool" ]; then
               gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force || true
