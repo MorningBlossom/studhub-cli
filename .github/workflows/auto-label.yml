@@ -58,27 +58,44 @@ jobs:
           done
           ACTIVE_TOOLS=$(echo "$ACTIVE_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
-          # 6. RECONCILIATION: Clean up obsolete labels using the Label Description Watermark
+          # 6. RECONCILIATION: Clean up obsolete labels
           CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
+          
+          # Fetch all labels in the repository that we created (using the description as a watermark)
+          MANAGED_LABELS=$(gh label list --limit 1000 | grep 'Auto-generated trigger' | awk -F'\t' '{print $1}' || true)
 
           for label in $CURRENT_LABELS; do
             if [ -n "$label" ]; then
-              # Check if the label is currently active in the PR
-              IS_ACTIVE=0
-              for tool in $ACTIVE_TOOLS; do
-                if [ "$tool" == "$label" ]; then
-                  IS_ACTIVE=1
+              IS_MANAGED=0
+              
+              # Check if the label is one of our auto-generated ones
+              for managed in $MANAGED_LABELS; do
+                if [ "$managed" == "$label" ]; then
+                  IS_MANAGED=1
+                  break
+                fi
+              done
+              
+              # Fallback: If it was actively touched in this diff, we manage it
+              for changed in $ALL_CHANGED_TOOLS; do
+                if [ "$changed" == "$label" ]; then
+                  IS_MANAGED=1
                   break
                 fi
               done
 
-              # If it is NOT an active tool, verify if it's one of our auto-generated labels
-              if [ $IS_ACTIVE -eq 0 ]; then
-                # Fetch the label's description from the repository
-                LABEL_DESC=$(gh label view "$label" --json description -q '.description' 2>/dev/null || true)
+              # If we own this label, verify it is still active
+              if [ $IS_MANAGED -eq 1 ]; then
+                IS_ACTIVE=0
+                for tool in $ACTIVE_TOOLS; do
+                  if [ "$tool" == "$label" ]; then
+                    IS_ACTIVE=1
+                    break
+                  fi
+                done
                 
-                # If the description matches our watermark, it is an obsolete tool label. Remove it.
-                if [[ "$LABEL_DESC" == Auto-generated\ trigger* ]]; then
+                # If it is NOT active (folder deleted or commit reverted), remove it
+                if [ $IS_ACTIVE -eq 0 ]; then
                   echo "🧹 Removing obsolete tool label: $label"
                   gh pr edit "$PR_NUMBER" --remove-label "$label" || true
                 fi
