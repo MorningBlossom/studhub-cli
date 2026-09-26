@@ -49,6 +49,7 @@ jobs:
           ')
 
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
     needs: prepare-matrix
@@ -79,6 +80,7 @@ jobs:
 
       - name: Build binary
         env:
+          TOOL: ${{ matrix.tool }}
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
@@ -88,33 +90,36 @@ jobs:
 
           mkdir -p dist
 
-          binary_name="${{ matrix.tool }}"
+          binary_name="$TOOL"
 
-          if [ "${{ matrix.goos }}" = "windows" ]; then
+          if [ "$GOOS" = "windows" ]; then
             binary_name="${binary_name}.exe"
           fi
 
           echo "Building:"
-          echo "  Tool:   ${{ matrix.tool }}"
-          echo "  GOOS:   ${{ matrix.goos }}"
-          echo "  GOARCH: ${{ matrix.goarch }}"
+          echo "  Tool:   $TOOL"
+          echo "  GOOS:   $GOOS"
+          echo "  GOARCH: $GOARCH"
 
           go build \
             -trimpath \
             -o "dist/${binary_name}" \
-            "./cmd/${{ matrix.tool }}"
+            "./cmd/$TOOL"
 
           test -f "dist/${binary_name}"
 
       - name: Verify binary
+        env:
+          TOOL: ${{ matrix.tool }}
+          GOOS: ${{ matrix.goos }}
         shell: bash
         run: |
           set -euo pipefail
 
-          if [ "${{ matrix.goos }}" = "windows" ]; then
-            test -f "dist/${{ matrix.tool }}.exe"
+          if [ "$GOOS" = "windows" ]; then
+            test -f "dist/${TOOL}.exe"
           else
-            test -f "dist/${{ matrix.tool }}"
+            test -f "dist/${TOOL}"
           fi
 
       - name: Upload validation artifact
