@@ -23,28 +23,31 @@ jobs:
           # Get all changed files from the active PR
           CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
           
-          # 1. Detect tools directly modified inside cmd/
-          CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2)
+          # 1. Detect tools directly modified inside cmd/ (added || true to prevent crash if empty)
+          CMD_TOOLS=$(echo "$CHANGED_FILES" | grep '^cmd/' | cut -d'/' -f2 || true)
 
           # 2. Detect tools indirectly affected by changes in pkg/
           PKG_TOOLS=""
-          PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u)
+          PKG_DIRS=$(echo "$CHANGED_FILES" | grep '^pkg/' | cut -d'/' -f2 | sort -u || true)
           
           for pkg in $PKG_DIRS; do
-            echo "Detected change in shared package: pkg/$pkg"
-            # Search inside cmd/ for any tool that imports this package
-            if [ -d "./cmd" ]; then
-              # This finds import paths (e.g., ".../pkg/studhub-generator") and extracts the tool folder
-              AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2)
-              PKG_TOOLS="$PKG_TOOLS $AFFECTED"
+            # Ensure pkg is not an empty string
+            if [ -n "$pkg" ]; then
+              echo "Detected change in shared package: pkg/$pkg"
+              # Search inside cmd/ for any tool that imports this package
+              if [ -d "./cmd" ]; then
+                # Added || true so it doesn't crash if no tool imports this specific package yet
+                AFFECTED=$(grep -rl "pkg/$pkg" cmd/ 2>/dev/null | cut -d'/' -f2 || true)
+                PKG_TOOLS="$PKG_TOOLS $AFFECTED"
+              fi
             fi
           done
 
           # Combine both lists, remove duplicates, and remove empty lines
-          ALL_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$')
+          ALL_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
           if [ -z "$ALL_TOOLS" ]; then
-            echo "No relevant changes detected in cmd/ or pkg/. Skipping label generation."
+            echo "No relevant changes detected in cmd/ or pkg/ that affect a CLI tool. Skipping label generation."
             exit 0
           fi
 
@@ -60,7 +63,7 @@ jobs:
 
           # Apply the label
           for tool in $ALL_TOOLS; do
-            if [ -d "./cmd/$tool" ]; then
+            if [ -n "$tool" ] && [ -d "./cmd/$tool" ]; then
               # Create the label if it doesn't exist, then attach it to the PR
               gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force
               gh pr edit "$PR_NUMBER" --add-label "$tool"
