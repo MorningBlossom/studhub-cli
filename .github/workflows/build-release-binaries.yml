@@ -23,7 +23,7 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.tool }} / ${{ matrix.platform.goos }} / ${{ matrix.platform.goarch }}
+    name: Build ${{ matrix.tool }} / ${{ matrix.goos }} / ${{ matrix.goarch }}
 
     runs-on: ubuntu-latest
 
@@ -32,7 +32,7 @@ jobs:
 
       matrix:
         tool: ${{ fromJSON(inputs.tools) }}
-        platform:
+        include:
           - goos: linux
             goarch: amd64
           - goos: linux
@@ -43,12 +43,6 @@ jobs:
             goarch: arm64
           - goos: windows
             goarch: amd64
-        exclude: []
-
-    # Map the platform attributes back to individual matrix variables for your steps
-    env:
-      GOOS: ${{ matrix.platform.goos }}
-      GOARCH: ${{ matrix.platform.goarch }}
 
     steps:
       - name: Checkout exact release commit
@@ -71,8 +65,8 @@ jobs:
 
       - name: Build binary
         env:
-          GOOS: ${{ matrix.platform.goos }}
-          GOARCH: ${{ matrix.platform.goarch }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 0
         shell: bash
         run: |
@@ -82,7 +76,7 @@ jobs:
 
           binary_name="${{ matrix.tool }}"
 
-          if [ "${GOOS}" = "windows" ]; then
+          if [ "${{ matrix.goos }}" = "windows" ]; then
             binary_name="${binary_name}.exe"
           fi
 
@@ -102,7 +96,7 @@ jobs:
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bin-${{ matrix.tool }}-${{ matrix.platform.goos }}-${{ matrix.platform.goarch }}
+          name: bin-${{ matrix.tool }}-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 7
