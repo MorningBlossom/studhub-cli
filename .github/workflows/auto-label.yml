@@ -17,7 +17,7 @@ jobs:
 
       - name: Detect and Apply Tool Labels
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           CHANGED_FILES=$(gh pr diff "$PR_NUMBER" --name-only)
@@ -50,34 +50,63 @@ jobs:
 
           ALL_TOOLS=$(echo -e "$CMD_TOOLS\n$PKG_TOOLS" | tr ' ' '\n' | sort -u | grep -v '^$' || true)
 
-          # RECONCILIATION: Remove stale tool labels
+          # RECONCILIATION: Remove stale or deleted tool labels
           CURRENT_LABELS=$(gh pr view "$PR_NUMBER" --json labels -q '.labels[].name' || true)
 
           for label in $CURRENT_LABELS; do
-            if [ -n "$label" ] && [ -d "./cmd/$label" ]; then
-              IS_VALID=0
-              for tool in $ALL_TOOLS; do
-                if [ "$tool" == "$label" ]; then
-                  IS_VALID=1
-                  break
-                fi
-              done
+            if [ -n "$label" ]; then
+              IS_TOOL_LABEL=0
               
-              if [ $IS_VALID -eq 0 ]; then
-                echo "🧹 Removing stale label: $label"
-                gh pr edit "$PR_NUMBER" --remove-label "$label" || true
+              # Identify if this label is a CLI tool (folder exists OR it was modified/deleted in this PR)
+              if [ -d "./cmd/$label" ]; then
+                IS_TOOL_LABEL=1
+              else
+                for tool in $ALL_TOOLS; do
+                  if [ "$tool" == "$label" ]; then
+                    IS_TOOL_LABEL=1
+                    break
+                  fi
+                done
+              fi
+              
+              # If it is a tool label, verify if it is STILL valid
+              if [ $IS_TOOL_LABEL -eq 1 ]; then
+                IS_VALID=0
+                
+                # A label is ONLY valid if the folder still exists AND has active changes
+                if [ -d "./cmd/$label" ]; then
+                  for tool in $ALL_TOOLS; do
+                    if [ "$tool" == "$label" ]; then
+                      IS_VALID=1
+                      break
+                    fi
+                  done
+                fi
+                
+                if [ $IS_VALID -eq 0 ]; then
+                  echo "🧹 Removing stale or deleted label: $label"
+                  gh pr edit "$PR_NUMBER" --remove-label "$label" || true
+                fi
               fi
             fi
           done
 
-          if [ -z "$ALL_TOOLS" ]; then
-            echo "No relevant changes detected in cmd/ or pkg/ that affect a CLI tool. Skipping label addition."
+          # Check if any VALID tools remain after accounting for deletions
+          VALID_TOOLS_COUNT=0
+          for tool in $ALL_TOOLS; do
+            if [ -d "./cmd/$tool" ]; then
+              VALID_TOOLS_COUNT=$((VALID_TOOLS_COUNT+1))
+            fi
+          done
+
+          if [ "$VALID_TOOLS_COUNT" -eq 0 ]; then
+            echo "No active tool changes remain (tools were either reverted or deleted). Pipeline complete."
             exit 0
           fi
 
-          echo "✅ Affected tools to be labeled: $ALL_TOOLS"
+          echo "✅ Affected active tools to be labeled: $ALL_TOOLS"
 
-          # Apply current labels (Multiple tools are now fully supported)
+          # Apply current labels for existing tools
           for tool in $ALL_TOOLS; do
             if [ -n "$tool" ] && [ -d "./cmd/$tool" ]; then
               gh label create "$tool" --description "Auto-generated trigger for $tool" --color "00ADD8" --force || true
