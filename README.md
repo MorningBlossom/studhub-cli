@@ -599,4 +599,8 @@ The generated project provides a common baseline for:
 
 The templates can be extended over time as StudHub's development standards evolve.
 
+#Run locally after changes made for local testing
+ go build -o studhub-generate.exe ./cmd/studhub-generate
+ .\studhub-generate.exe service notification 
+
 ---------------------------------------------------------------
