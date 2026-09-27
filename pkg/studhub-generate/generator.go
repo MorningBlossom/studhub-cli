@@ -33,6 +33,7 @@ func GenerateService(serviceName string) error {
 		"templates/ci-cd.yaml.tmpl":    filepath.Join(serviceName, ".github", "workflows", "ci-cd.yaml"),
 		"templates/docker_file.tmpl":   filepath.Join(serviceName, "Dockerfile"),
 		"templates/dockerignore.tmpl":  filepath.Join(serviceName, ".dockerignore"),
+		"templates/docker-compose.yml.tmpl": filepath.Join(serviceName, "docker-compose.yml"),
 		"templates/gitignore.tmpl":     filepath.Join(serviceName, ".gitignore"),
 		"templates/makefile.tmpl":      filepath.Join(serviceName, "Makefile"),
 		"templates/README.md.tmpl":     filepath.Join(serviceName, "README.md"),
