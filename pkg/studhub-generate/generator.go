@@ -22,21 +22,19 @@ func GenerateService(serviceName string) error {
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
+		os.MkdirAll(dir, 0755)
 	}
 
 	// 2. Map template sources to destination paths
 	files := map[string]string{
-		"templates/main.go.tmpl":       filepath.Join(serviceName, "cmd", "service", "main.go"),
-		"templates/ci-cd.yaml.tmpl":    filepath.Join(serviceName, ".github", "workflows", "ci-cd.yaml"),
-		"templates/docker_file.tmpl":   filepath.Join(serviceName, "Dockerfile"),
-		"templates/dockerignore.tmpl":  filepath.Join(serviceName, ".dockerignore"),
+		"templates/main.go.tmpl":            filepath.Join(serviceName, "cmd", "service", "main.go"),
+		"templates/ci-cd.yaml.tmpl":         filepath.Join(serviceName, ".github", "workflows", "ci-cd.yaml"),
+		"templates/docker_file.tmpl":        filepath.Join(serviceName, "Dockerfile"),
+		"templates/dockerignore.tmpl":       filepath.Join(serviceName, ".dockerignore"),
 		"templates/docker-compose.yml.tmpl": filepath.Join(serviceName, "docker-compose.yml"),
-		"templates/gitignore.tmpl":     filepath.Join(serviceName, ".gitignore"),
-		"templates/makefile.tmpl":      filepath.Join(serviceName, "Makefile"),
-		"templates/README.md.tmpl":     filepath.Join(serviceName, "README.md"),
+		"templates/gitignore.tmpl":          filepath.Join(serviceName, ".gitignore"),
+		"templates/makefile.tmpl":           filepath.Join(serviceName, "Makefile"),
+		"templates/README.md.tmpl":          filepath.Join(serviceName, "README.md"),
 	}
 
 	// 3. Render each file
