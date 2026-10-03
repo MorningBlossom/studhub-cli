@@ -11,37 +11,43 @@ func GenerateService(serviceName string) error {
 	data := TemplateData{ServiceName: serviceName}
 	serviceDir := serviceName
 
-	if err := os.MkdirAll(serviceDir, 0755); err != nil {
+	if err := os.MkdirAll(serviceDir, 0750); err != nil {
 		return err
 	}
 
+	serviceRoot, err := os.OpenRoot(serviceDir)
+	if err != nil {
+		return err
+	}
+	defer serviceRoot.Close()
+
 	// 1. Define the internal directory tree
 	dirs := []string{
-		filepath.Join(serviceName, "cmd", "service"),
-		filepath.Join(serviceName, ".github", "workflows"),
+		filepath.Join("cmd", "service"),
+		filepath.Join(".github", "workflows"),
 	}
 
 	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := serviceRoot.MkdirAll(dir, 0750); err != nil {
 			return err
 		}
 	}
 
 	// 2. Map template sources to destination paths
 	files := map[string]string{
-		"templates/main.go.tmpl":       filepath.Join(serviceName, "cmd", "service", "main.go"),
-		"templates/ci-cd.yaml.tmpl":    filepath.Join(serviceName, ".github", "workflows", "ci-cd.yaml"),
-		"templates/docker_file.tmpl":   filepath.Join(serviceName, "Dockerfile"),
-		"templates/dockerignore.tmpl":  filepath.Join(serviceName, ".dockerignore"),
-		"templates/docker-compose.yml.tmpl": filepath.Join(serviceName, "docker-compose.yml"),
-		"templates/gitignore.tmpl":     filepath.Join(serviceName, ".gitignore"),
-		"templates/makefile.tmpl":      filepath.Join(serviceName, "Makefile"),
-		"templates/README.md.tmpl":     filepath.Join(serviceName, "README.md"),
+		"templates/main.go.tmpl":            filepath.Join("cmd", "service", "main.go"),
+		"templates/ci-cd.yaml.tmpl":         filepath.Join(".github", "workflows", "ci-cd.yaml"),
+		"templates/docker_file.tmpl":        "Dockerfile",
+		"templates/dockerignore.tmpl":       ".dockerignore",
+		"templates/docker-compose.yml.tmpl": "docker-compose.yml",
+		"templates/gitignore.tmpl":          ".gitignore",
+		"templates/makefile.tmpl":           "Makefile",
+		"templates/README.md.tmpl":          "README.md",
 	}
 
 	// 3. Render each file
 	for tmplSource, destPath := range files {
-		if err := renderTemplate(tmplSource, destPath, data); err != nil {
+		if err := renderTemplate(serviceRoot, tmplSource, destPath, data); err != nil {
 			return err
 		}
 	}
@@ -49,6 +55,7 @@ func GenerateService(serviceName string) error {
 	// 4. Automatically initialize Go dependencies and format code
 	// initialize a new Go module
 	modName := fmt.Sprintf("github.com/MorningBlossom/%s", serviceName)
+	// #nosec G204 -- serviceName is passed as a single argument to a fixed executable; it is not interpreted by a shell.
 	initCmd := exec.Command("go", "mod", "init", modName)
 	initCmd.Dir = serviceDir
 	initCmd.Stdout = os.Stdout

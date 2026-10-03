@@ -14,7 +14,7 @@ type TemplateData struct {
 	ServiceName string
 }
 
-func renderTemplate(tmplPath string, destPath string, data TemplateData) error {
+func renderTemplate(root *os.Root, tmplPath string, destPath string, data TemplateData) error {
 	content, err := templateFS.ReadFile(tmplPath)
 	if err != nil {
 		return err
@@ -25,12 +25,11 @@ func renderTemplate(tmplPath string, destPath string, data TemplateData) error {
 		return err
 	}
 
-	file, err := os.Create(destPath)
-
+	file, err := root.Create(destPath)
 	if err != nil {
 		return err
 	}
-	
+
 	defer file.Close()
 
 	return tmpl.Execute(file, data)
